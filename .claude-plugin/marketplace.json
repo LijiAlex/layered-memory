@@ -1,0 +1,14 @@
+{
+  "name": "layered-memory",
+  "owner": { "name": "liji.a" },
+  "plugins": [
+    {
+      "name": "layered-memory",
+      "source": "./plugins/layered-memory",
+      "version": "0.1.0",
+      "description": "File-based, progressive-disclosure memory for Claude Code.",
+      "category": "productivity",
+      "keywords": ["memory", "context", "sessions"]
+    }
+  ]
+}
