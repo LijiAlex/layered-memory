@@ -18,6 +18,25 @@ def _cfg(tmp_path, **over):
     return c
 
 
+def test_parse_args_limit():
+    assert build._parse_args(["--limit", "3"]).limit == 3
+    assert build._parse_args([]).limit is None
+
+
+def test_main_applies_limit(monkeypatch, tmp_path):
+    captured = {}
+
+    def fake_run_build(mem, base_mem, cfg, ts, op_id, model_caller=None):
+        captured["limit"] = cfg["build_max_transcripts"]
+        return {"themes_written": 0, "themes": [], "transcripts_processed": 0,
+                "errors": []}
+
+    monkeypatch.setattr(build, "run_build", fake_run_build)
+    monkeypatch.setattr(build.paths, "base_memory_dir", lambda: tmp_path)
+    build.main(["--limit", "7"])
+    assert captured["limit"] == 7
+
+
 def test_strip_frontmatter():
     md = "---\nname: x\ndescription: y\n---\n# Body\ntext\n"
     out = build._strip_frontmatter(md)

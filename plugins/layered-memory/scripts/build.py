@@ -172,16 +172,32 @@ def _now_iso():
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def main():
+def _parse_args(argv):
+    import argparse
+    ap = argparse.ArgumentParser(prog="memory:build", add_help=False)
+    ap.add_argument("--limit", type=int, default=None,
+                    help="max NEW transcripts to ingest this run "
+                         "(overrides build_max_transcripts)")
+    return ap.parse_args(argv)
+
+
+def main(argv=None):
+    import sys
     import config as cfgmod
+    ns = _parse_args(sys.argv[1:] if argv is None else argv)
     base = paths.base_memory_dir()
     cfg = cfgmod.load_config(base)
+    if ns.limit is not None:
+        cfg["build_max_transcripts"] = ns.limit
     ts = _now_iso()
     op_id = f"build-{ts.replace(':', '-')}"
     receipt = run_build(base, base_mem=base, cfg=cfg, ts=ts, op_id=op_id)
-    print(f"[memory] /memory:build → {receipt['themes_written']} themes written")
+    print(f"[memory] /memory:build → {receipt['themes_written']} themes written "
+          f"({receipt['transcripts_processed']} transcripts)")
     for slug in receipt["themes"]:
         print(f"  - {slug}")
+    if receipt["errors"]:
+        print(f"  ! {len(receipt['errors'])} error(s): {receipt['errors'][0]['error'][:120]}")
     print(f"  index: {paths.index_path(base)}")
 
 
