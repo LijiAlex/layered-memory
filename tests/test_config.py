@@ -27,3 +27,9 @@ def test_load_bad_json_falls_back_to_defaults(tmp_path):
     (tmp_path / "config.json").write_text("{not valid json")
     cfg = config.load_config(tmp_path)
     assert cfg == config.DEFAULTS
+
+
+def test_build_caps_present():
+    d = config.DEFAULTS
+    assert d["build_max_transcripts"] == 50
+    assert d["build_transcript_char_cap"] == 40000
