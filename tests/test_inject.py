@@ -26,12 +26,19 @@ def test_estimate_tokens_roughly_quarter_chars():
     assert inject.estimate_tokens("") == 0
 
 
-def test_index_cost_message_reports_tokens_and_pct():
-    msg = inject.index_cost_message("x" * 4000, 200000)   # ~1000 tokens → 0.50%
+def test_index_cost_message_tokens_only_by_default():
+    msg = inject.index_cost_message("x" * 4000)            # no window → tokens only
+    assert "1000 tokens" in msg
+    assert "%" not in msg
+
+
+def test_index_cost_message_adds_pct_when_window_set():
+    msg = inject.index_cost_message("x" * 4000, 200000)    # ~1000 tokens → 0.50%
     assert "1000 tokens" in msg
     assert "0.50%" in msg
     assert "200000-token context" in msg
 
 
-def test_index_cost_message_empty_when_no_context():
+def test_index_cost_message_empty_when_no_text():
     assert inject.index_cost_message("", 200000) == ""
+    assert inject.index_cost_message("") == ""

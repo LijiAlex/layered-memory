@@ -27,12 +27,16 @@ def estimate_tokens(text: str) -> int:
     return (len(text) + 3) // 4 if text else 0
 
 
-def index_cost_message(ctx_text: str, context_window: int) -> str:
-    """User-facing one-liner: how much of the context window the injected index consumes.
-    Empty string when nothing was injected."""
+def index_cost_message(ctx_text: str, context_window=None) -> str:
+    """User-facing one-liner reporting the injected index's size in tokens (always) and,
+    only when `context_window` is set, its share of that window. The % is opt-in because
+    the hook cannot detect the live session's real window — an assumed denominator would
+    be misleading on other machines/models. Empty string when nothing was injected."""
     toks = estimate_tokens(ctx_text)
     if not toks:
         return ""
-    pct = (100.0 * toks / context_window) if context_window else 0.0
-    return (f"[memory] index loaded: ~{toks} tokens "
-            f"(~{pct:.2f}% of {context_window}-token context)")
+    msg = f"[memory] index loaded: ~{toks} tokens"
+    if context_window:
+        pct = 100.0 * toks / context_window
+        msg += f" (~{pct:.2f}% of {context_window}-token context)"
+    return msg

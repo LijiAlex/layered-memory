@@ -14,7 +14,7 @@ DEFAULTS = {
     "writeup_max_themes_inline": 8,
     "build_max_transcripts": 50,
     "build_transcript_char_cap": 40000,
-    "context_window": 200000,          # for reporting index injection as a % of context
+    "context_window": None,            # set to your model's window (e.g. 1000000) to also show a %; tokens always shown
     "scratch_stale_after_min": 30,
     "reconcile_schedule": "03:30",
     "reconcile_min_interval_hours": 20,
