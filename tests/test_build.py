@@ -110,7 +110,9 @@ def test_max_transcripts_cap(tmp_path):
 
 
 def test_char_cap_truncates_prompt(tmp_path):
-    big = "A" * 100_000
+    # use a rare filler char ('Z') so the count measures ONLY transcript content,
+    # not capital letters that appear in the engine prompt/skill text.
+    big = "Z" * 100_000
     _mk_transcript(tmp_path / "tx" / "p", "s1", content=big)
     mem = tmp_path / "mem"
     seen = {}
@@ -122,7 +124,7 @@ def test_char_cap_truncates_prompt(tmp_path):
     build.run_build(mem, base_mem=mem, cfg=_cfg(tmp_path, build_transcript_char_cap=5000),
                     ts="t", op_id="op", model_caller=caller)
     assert "…[truncated]" in seen["prompt"]
-    assert seen["prompt"].count("A") <= 5001        # capped well below 100k
+    assert seen["prompt"].count("Z") <= 5001        # transcript capped well below 100k
 
 
 def test_snapshot_once_per_slug_and_manifest(tmp_path):
