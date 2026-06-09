@@ -10,7 +10,7 @@ DEFAULTS = {
     "transcript_dir": None,
     "nudge_idle_turns": 6,
     "writeup_lock_timeout_sec": 30,
-    "writeup_call_timeout_sec": 20,
+    "writeup_call_timeout_sec": 90,
     "writeup_max_themes_inline": 8,
     "build_max_transcripts": 50,
     "build_transcript_char_cap": 40000,
