@@ -111,3 +111,26 @@ def run_build(mem: Path, base_mem: Path, cfg: dict, ts: str, op_id: str,
         snapshot.write_manifest(base_mem, op_id, manifest_entries)
 
     return {"themes_written": written, "themes": [e["slug"] for e in index_entries]}
+
+
+def _now_iso():
+    # ts is injected in tests; for the CLI we read the wall clock here only.
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def main():
+    import config as cfgmod
+    base = paths.base_memory_dir()
+    cfg = cfgmod.load_config(base)
+    ts = _now_iso()
+    op_id = f"build-{ts.replace(':', '-')}"
+    receipt = run_build(base, base_mem=base, cfg=cfg, ts=ts, op_id=op_id)
+    print(f"[memory] /memory:build → {receipt['themes_written']} themes written")
+    for slug in receipt["themes"]:
+        print(f"  - {slug}")
+    print(f"  index: {paths.index_path(base)}")
+
+
+if __name__ == "__main__":
+    main()
