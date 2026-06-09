@@ -123,7 +123,8 @@ def run_build(mem: Path, base_mem: Path, cfg: dict, ts: str, op_id: str,
             existing = _load_existing(mem)      # reloaded each iter (grows)
             try:
                 result = model_caller(_engine_prompt(text, existing),
-                                      ENGINE_A_SCHEMA, cfg["writeup_model"],
+                                      ENGINE_A_SCHEMA,
+                                      cfg.get("build_model") or cfg["writeup_model"],
                                       cfg["writeup_call_timeout_sec"])
             except Exception as e:              # noqa: BLE001 - resilience boundary
                 errors.append({"session": sid, "error": str(e)[:200]})
