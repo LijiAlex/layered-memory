@@ -14,6 +14,7 @@ DEFAULTS = {
     "writeup_max_themes_inline": 8,
     "build_max_transcripts": 50,
     "build_transcript_char_cap": 40000,
+    "context_window": 200000,          # for reporting index injection as a % of context
     "scratch_stale_after_min": 30,
     "reconcile_schedule": "03:30",
     "reconcile_min_interval_hours": 20,

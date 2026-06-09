@@ -20,3 +20,19 @@ def build_index_context(base_index_text: str, project_index_text: str) -> str:
     if proj:
         parts += ["## This project", proj, ""]
     return "\n".join(parts).rstrip() + "\n"
+
+
+def estimate_tokens(text: str) -> int:
+    """Rough token estimate (no tokenizer dep): ~4 chars/token for English/markdown."""
+    return (len(text) + 3) // 4 if text else 0
+
+
+def index_cost_message(ctx_text: str, context_window: int) -> str:
+    """User-facing one-liner: how much of the context window the injected index consumes.
+    Empty string when nothing was injected."""
+    toks = estimate_tokens(ctx_text)
+    if not toks:
+        return ""
+    pct = (100.0 * toks / context_window) if context_window else 0.0
+    return (f"[memory] index loaded: ~{toks} tokens "
+            f"(~{pct:.2f}% of {context_window}-token context)")

@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import paths      # noqa: E402
 import inject     # noqa: E402
 import model      # noqa: E402
+import config     # noqa: E402
 
 
 def _read(p: Path) -> str:
@@ -33,10 +34,16 @@ def main():
     if not ctx:
         return                     # nothing stored yet → inject nothing
 
-    out = {"hookSpecificOutput": {
-        "hookEventName": "SessionStart",
-        "additionalContext": ctx,
-    }}
+    base_mem = paths.base_memory_dir()
+    cfg = config.load_config(base_mem)
+    out = {
+        "hookSpecificOutput": {
+            "hookEventName": "SessionStart",
+            "additionalContext": ctx,
+        },
+        # user-terminal only (not model context): report the index's context cost
+        "systemMessage": inject.index_cost_message(ctx, cfg["context_window"]),
+    }
     print(json.dumps(out))
 
 
