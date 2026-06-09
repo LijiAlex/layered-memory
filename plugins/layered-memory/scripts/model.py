@@ -22,8 +22,10 @@ def _build_invocation(prompt: str, schema: dict, model: str):
     # NOTE: `--bare` is intentionally NOT used — it ignores OAuth/keychain auth and
     # fails ("Not logged in") for subscription users (verified). The recursion env-guard
     # below is the isolation mechanism instead.
+    # Guard: a positional prompt that begins with '-' is misparsed as a CLI option.
+    safe_prompt = prompt if not prompt.startswith("-") else " " + prompt
     argv = [
-        "claude", "-p", prompt,
+        "claude", "-p", safe_prompt,
         "--model", model,
         "--output-format", "json",
         "--tools", "",                         # no tools: pure text compression

@@ -18,6 +18,20 @@ def _cfg(tmp_path, **over):
     return c
 
 
+def test_strip_frontmatter():
+    md = "---\nname: x\ndescription: y\n---\n# Body\ntext\n"
+    out = build._strip_frontmatter(md)
+    assert out.startswith("# Body")
+    assert "name: x" not in out
+
+
+def test_engine_prompt_does_not_start_with_dash():
+    # the skill begins with YAML frontmatter (---); the prompt must NOT, or the CLI
+    # arg parser treats it as an option flag.
+    p = build._engine_prompt("some transcript", {})
+    assert not p.lstrip().startswith("-")
+
+
 def test_one_call_per_transcript_and_themes_written(tmp_path):
     _mk_transcript(tmp_path / "tx" / "p", "s1")
     _mk_transcript(tmp_path / "tx" / "p", "s2")

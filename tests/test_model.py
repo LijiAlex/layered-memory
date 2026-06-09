@@ -52,6 +52,13 @@ def test_call_model_raises_on_bad_json():
         pass
 
 
+def test_leading_dash_prompt_is_guarded():
+    argv, _ = model._build_invocation("---\nname: skill\n# body", {}, "m")
+    # the prompt must not appear as a bare leading-dash positional
+    assert "---\nname: skill\n# body" not in argv
+    assert " ---\nname: skill\n# body" in argv     # space-prefixed, defused
+
+
 def test_recursion_guard_short_circuits(monkeypatch):
     monkeypatch.setenv("LAYERED_MEMORY_INTERNAL", "1")
     assert model.is_internal_call() is True

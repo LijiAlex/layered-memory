@@ -33,8 +33,20 @@ ENGINE_A_SCHEMA = {
 }
 
 
+def _strip_frontmatter(md: str) -> str:
+    """Drop a leading YAML frontmatter block (--- ... ---). The skill's name/description
+    is metadata, not reasoning; keeping it also makes the prompt start with '---', which a
+    CLI arg parser misreads as an option flag."""
+    lines = md.splitlines()
+    if lines and lines[0].strip() == "---":
+        for i in range(1, len(lines)):
+            if lines[i].strip() == "---":
+                return "\n".join(lines[i + 1:]).lstrip("\n")
+    return md
+
+
 def _engine_prompt(transcript_text: str, existing: dict) -> str:
-    skill = _SKILL.read_text()
+    skill = _strip_frontmatter(_SKILL.read_text())
     existing_block = "\n\n".join(
         f"### EXISTING THEME: {slug}\n{body}" for slug, body in existing.items()
     ) or "(none)"
