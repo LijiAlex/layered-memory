@@ -31,6 +31,10 @@ def processed_path(mem: Path) -> Path:
     return mem / "processed.log"
 
 
+def complaints_path(mem: Path) -> Path:
+    return mem / "complaints.log"
+
+
 def transcript_dir(cfg: dict) -> Path:
     override = cfg.get("transcript_dir")
     if override:

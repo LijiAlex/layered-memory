@@ -29,3 +29,8 @@ def test_transcript_dir_autodetect(monkeypatch, tmp_path):
 def test_processed_path():
     mem = Path("/tmp/mem")
     assert paths.processed_path(mem) == mem / "processed.log"
+
+
+def test_complaints_path():
+    mem = Path("/tmp/mem")
+    assert paths.complaints_path(mem) == mem / "complaints.log"
