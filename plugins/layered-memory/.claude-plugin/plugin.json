@@ -3,5 +3,6 @@
   "version": "0.1.0",
   "description": "File-based, progressive-disclosure memory for Claude Code.",
   "commands": "./commands",
-  "skills": "./skills"
+  "skills": "./skills",
+  "hooks": "./hooks/hooks.json"
 }
