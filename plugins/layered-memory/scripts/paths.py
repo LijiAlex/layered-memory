@@ -27,6 +27,10 @@ def ops_dir(mem: Path) -> Path:
     return history_dir(mem) / "_ops"
 
 
+def processed_path(mem: Path) -> Path:
+    return mem / "processed.log"
+
+
 def transcript_dir(cfg: dict) -> Path:
     override = cfg.get("transcript_dir")
     if override:

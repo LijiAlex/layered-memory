@@ -24,3 +24,8 @@ def test_transcript_dir_autodetect(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
     cfg = {"transcript_dir": None}
     assert paths.transcript_dir(cfg) == tmp_path / ".claude" / "projects"
+
+
+def test_processed_path():
+    mem = Path("/tmp/mem")
+    assert paths.processed_path(mem) == mem / "processed.log"
