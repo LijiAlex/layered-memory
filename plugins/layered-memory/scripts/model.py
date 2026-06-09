@@ -15,9 +15,17 @@ def is_internal_call() -> bool:
 
 
 def _build_invocation(prompt: str, schema: dict, model: str):
+    # Prompt is passed as a POSITIONAL arg (not stdin) — stdin was out-weighed by
+    # ambient context and the model ignored it (verified empirically). `--output-format
+    # json` is REQUIRED for `--json-schema` to take effect; the schema-conforming object
+    # then arrives in the envelope's `structured_output` field (not `result`).
+    # NOTE: `--bare` is intentionally NOT used — it ignores OAuth/keychain auth and
+    # fails ("Not logged in") for subscription users (verified). The recursion env-guard
+    # below is the isolation mechanism instead.
     argv = [
-        "claude", "-p",
+        "claude", "-p", prompt,
         "--model", model,
+        "--output-format", "json",
         "--tools", "",                         # no tools: pure text compression
         "--json-schema", json.dumps(schema),
     ]
@@ -27,9 +35,11 @@ def _build_invocation(prompt: str, schema: dict, model: str):
 
 
 def _default_runner(argv, env, input_text, timeout):
+    import tempfile
     proc = subprocess.run(
         argv, input=input_text, env=env, timeout=timeout,
         capture_output=True, text=True,
+        cwd=tempfile.gettempdir(),             # avoid loading a project CLAUDE.md
     )
     if proc.returncode != 0:
         raise ModelError(f"claude exited {proc.returncode}: {proc.stderr[:500]}")
@@ -38,9 +48,21 @@ def _default_runner(argv, env, input_text, timeout):
 
 def call_model(prompt: str, schema: dict, model: str, timeout: int,
                runner=_default_runner) -> dict:
+    """Call the model and return the schema-conforming object.
+
+    Handles three shapes of `raw`:
+    - CC envelope with `structured_output` (real `claude -p --output-format json`) → unwrap it.
+    - CC envelope present but no `structured_output` → ModelError.
+    - bare object (unit-test fakes / direct schema dict) → returned as-is.
+    """
     argv, env = _build_invocation(prompt, schema, model)
-    raw = runner(argv, env, prompt, timeout)
+    raw = runner(argv, env, "", timeout)        # prompt is in argv; stdin empty
     try:
-        return json.loads(raw)
+        obj = json.loads(raw)
     except json.JSONDecodeError as e:
         raise ModelError(f"model output was not JSON: {raw[:500]}") from e
+    if isinstance(obj, dict) and obj.get("structured_output") is not None:
+        return obj["structured_output"]
+    if isinstance(obj, dict) and ("structured_output" in obj or obj.get("type") == "result"):
+        raise ModelError(f"no structured_output in CC envelope: {raw[:400]}")
+    return obj

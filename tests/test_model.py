@@ -7,17 +7,39 @@ def test_build_argv_has_guards():
                                         "claude-haiku-4-5")
     assert argv[0] == "claude"
     assert "-p" in argv
+    assert "PROMPT" in argv                 # prompt passed as positional arg, not stdin
+    assert "--output-format" in argv        # required for --json-schema to take effect
     assert "--json-schema" in argv
     assert "--tools" in argv
     assert env["LAYERED_MEMORY_INTERNAL"] == "1"
 
 
-def test_call_model_parses_json_via_fake():
+def test_call_model_parses_bare_object_via_fake():
     def fake_run(argv, env, input_text, timeout):
         return json.dumps({"themes": [{"slug": "x"}]})
     out = model.call_model("PROMPT", {"type": "object"}, "claude-haiku-4-5",
                            timeout=5, runner=fake_run)
     assert out["themes"][0]["slug"] == "x"
+
+
+def test_call_model_unwraps_cc_envelope_structured_output():
+    def fake_run(argv, env, input_text, timeout):
+        return json.dumps({"type": "result", "result": "",
+                           "structured_output": {"themes": [{"slug": "y"}]}})
+    out = model.call_model("PROMPT", {"type": "object"}, "claude-haiku-4-5",
+                           timeout=5, runner=fake_run)
+    assert out["themes"][0]["slug"] == "y"
+
+
+def test_call_model_envelope_without_structured_output_raises():
+    def fake_run(argv, env, input_text, timeout):
+        return json.dumps({"type": "result", "result": "prose, no schema",
+                           "structured_output": None})
+    try:
+        model.call_model("P", {}, "m", timeout=5, runner=fake_run)
+        assert False, "expected ModelError"
+    except model.ModelError:
+        pass
 
 
 def test_call_model_raises_on_bad_json():
