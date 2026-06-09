@@ -168,6 +168,31 @@ def test_model_error_is_resumable(tmp_path):
         (mem / "processed.log").read_text().strip() == ""
 
 
+def test_one_failure_does_not_abort_the_batch(tmp_path):
+    # first model call fails, second succeeds — with `continue` (not `break`) the
+    # second transcript must still be ingested, and the failed one stays un-processed.
+    _mk_transcript(tmp_path / "tx" / "p", "s1")
+    _mk_transcript(tmp_path / "tx" / "p", "s2")
+    mem = tmp_path / "mem"
+    calls = {"n": 0}
+
+    def caller(prompt, schema, model, timeout):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("timeout")
+        return {"themes": [{"slug": "ok", "oneliner": "o", "keywords": [],
+                            "merged_markdown": "## Purpose\nx\n"}]}
+
+    r = build.run_build(mem, base_mem=mem, cfg=_cfg(tmp_path), ts="t", op_id="op",
+                        model_caller=caller)
+    assert calls["n"] == 2                       # both attempted (didn't abort after #1)
+    assert r["themes_written"] == 1              # the second one still ingested
+    assert len(r["errors"]) == 1                 # the first recorded as an error
+    assert r["transcripts_processed"] == 1       # only the success marked done
+    done = set((mem / "processed.log").read_text().split())
+    assert len(done) == 1                         # failed transcript NOT marked → retries later
+
+
 def test_no_transcripts_is_noop(tmp_path):
     mem = tmp_path / "mem"
     r = build.run_build(mem, base_mem=mem, cfg=_cfg(tmp_path), ts="t", op_id="op",

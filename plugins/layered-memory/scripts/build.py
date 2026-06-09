@@ -128,7 +128,9 @@ def run_build(mem: Path, base_mem: Path, cfg: dict, ts: str, op_id: str,
                                       cfg["writeup_call_timeout_sec"])
             except Exception as e:              # noqa: BLE001 - resilience boundary
                 errors.append({"session": sid, "error": str(e)[:200]})
-                break                            # stop; processed ones persist, rerun resumes
+                continue                         # skip THIS transcript only; it's not marked
+                                                 # processed, so it retries on the next run.
+                                                 # Other transcripts in the batch still ingest.
             for t in result.get("themes", []):
                 slug = slugmod.normalize_slug(t["slug"])
                 if slug not in snapped:
