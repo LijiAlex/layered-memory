@@ -1,79 +1,141 @@
-from pathlib import Path
 import json
+from pathlib import Path
 import build
 import formats
 import config
 
 
-def _fake_model(themes):
+def _mk_transcript(tdir, name, content="hi"):
+    tdir.mkdir(parents=True, exist_ok=True)
+    (tdir / f"{name}.jsonl").write_text(json.dumps(
+        {"message": {"role": "user", "content": content}}) + "\n")
+
+
+def _cfg(tmp_path, **over):
+    c = dict(config.DEFAULTS)
+    c["transcript_dir"] = str(tmp_path / "tx")
+    c.update(over)
+    return c
+
+
+def test_one_call_per_transcript_and_themes_written(tmp_path):
+    _mk_transcript(tmp_path / "tx" / "p", "s1")
+    _mk_transcript(tmp_path / "tx" / "p", "s2")
+    mem = tmp_path / "mem"
+    calls = {"n": 0}
+
     def caller(prompt, schema, model, timeout):
-        return {"themes": themes}
-    return caller
+        calls["n"] += 1
+        return {"themes": [{"slug": f"theme{calls['n']}", "oneliner": "o",
+                            "keywords": ["k"], "merged_markdown": "## Purpose\nx\n"}]}
+
+    r = build.run_build(mem, base_mem=mem, cfg=_cfg(tmp_path),
+                        ts="t", op_id="op", model_caller=caller)
+    assert calls["n"] == 2                         # one call per transcript
+    assert r["transcripts_processed"] == 2
+    assert set(r["themes"]) == {"theme1", "theme2"}
+    # ledger records both sessions
+    done = (mem / "processed.log").read_text().split()
+    assert set(done) == {"s1", "s2"}
 
 
-def test_build_writes_theme_and_index(tmp_path, monkeypatch):
-    # transcript dir with one session
-    tdir = tmp_path / "tx" / "proj"
-    tdir.mkdir(parents=True)
-    (tdir / "s1.jsonl").write_text(json.dumps(
-        {"message": {"role": "user", "content": "which connectors?"}}) + "\n")
+def test_rerun_skips_processed(tmp_path):
+    _mk_transcript(tmp_path / "tx" / "p", "s1")
     mem = tmp_path / "mem"
-    cfg = dict(config.DEFAULTS)
-    cfg["transcript_dir"] = str(tmp_path / "tx")
 
-    fake = _fake_model([{
-        "slug": "Connector Inventory",
-        "oneliner": "connectors; no Snowflake.",
-        "keywords": ["connector", "snowflake"],
-        "merged_markdown": "## Key facts & decisions\n- No Snowflake.\n",
-    }])
-    receipt = build.run_build(mem, base_mem=mem, cfg=cfg,
-                              ts="2026-06-09T00:00:00Z", op_id="build-test",
-                              model_caller=fake)
+    def caller(prompt, schema, model, timeout):
+        return {"themes": [{"slug": "foo", "oneliner": "o", "keywords": [],
+                            "merged_markdown": "## Purpose\nv\n"}]}
 
-    theme_file = mem / "themes" / "connector-inventory.md"
-    assert theme_file.exists()                       # slug normalized
-    parsed = formats.parse_theme(theme_file.read_text())
-    assert "No Snowflake." in parsed["body"]
-    assert parsed["scope"] == "base"
+    build.run_build(mem, base_mem=mem, cfg=_cfg(tmp_path), ts="t1", op_id="op1",
+                    model_caller=caller)
+    calls = {"n": 0}
 
-    idx = formats.parse_index((mem / "index.md").read_text())
-    assert idx[0]["slug"] == "connector-inventory"
-    assert idx[0]["keywords"] == ["connector", "snowflake"]
+    def caller2(prompt, schema, model, timeout):
+        calls["n"] += 1
+        return {"themes": []}
 
-    # manifest written, action=created
-    man = json.loads((mem / "history" / "_ops" / "build-test.json").read_text())
-    assert man["themes"][0]["action"] == "created"
-    assert receipt["themes_written"] == 1
+    r = build.run_build(mem, base_mem=mem, cfg=_cfg(tmp_path), ts="t2", op_id="op2",
+                        model_caller=caller2)
+    assert calls["n"] == 0                          # nothing new → no model calls
+    assert r["transcripts_processed"] == 0
 
 
-def test_build_no_transcripts_is_noop(tmp_path):
+def test_max_transcripts_cap(tmp_path):
+    for n in ("s1", "s2", "s3"):
+        _mk_transcript(tmp_path / "tx" / "p", n)
     mem = tmp_path / "mem"
-    cfg = dict(config.DEFAULTS)
-    cfg["transcript_dir"] = str(tmp_path / "empty")
-    receipt = build.run_build(mem, base_mem=mem, cfg=cfg,
-                              ts="t", op_id="op", model_caller=_fake_model([]))
-    assert receipt["themes_written"] == 0
-    assert not (mem / "index.md").exists() or formats.parse_index(
-        (mem / "index.md").read_text()) == []
+    calls = {"n": 0}
+
+    def caller(prompt, schema, model, timeout):
+        calls["n"] += 1
+        return {"themes": []}
+
+    build.run_build(mem, base_mem=mem, cfg=_cfg(tmp_path, build_max_transcripts=2),
+                    ts="t", op_id="op", model_caller=caller)
+    assert calls["n"] == 2                          # capped
 
 
-def test_build_second_run_snapshots_prior(tmp_path):
+def test_char_cap_truncates_prompt(tmp_path):
+    big = "A" * 100_000
+    _mk_transcript(tmp_path / "tx" / "p", "s1", content=big)
     mem = tmp_path / "mem"
-    cfg = dict(config.DEFAULTS); cfg["transcript_dir"] = str(tmp_path / "tx")
-    (tmp_path / "tx").mkdir()
-    (tmp_path / "tx" / "s.jsonl").write_text(json.dumps(
-        {"message": {"role": "user", "content": "x"}}) + "\n")
-    t1 = [{"slug": "foo", "oneliner": "v1", "keywords": ["a"],
-           "merged_markdown": "## Purpose\nv1\n"}]
-    build.run_build(mem, base_mem=mem, cfg=cfg, ts="t1", op_id="op1",
-                    model_caller=_fake_model(t1))
-    t2 = [{"slug": "foo", "oneliner": "v2", "keywords": ["a"],
-           "merged_markdown": "## Purpose\nv2\n"}]
-    build.run_build(mem, base_mem=mem, cfg=cfg, ts="t2", op_id="op2",
-                    model_caller=_fake_model(t2))
-    # a snapshot of v1 exists; manifest op2 records action=updated
+    seen = {}
+
+    def caller(prompt, schema, model, timeout):
+        seen["prompt"] = prompt
+        return {"themes": []}
+
+    build.run_build(mem, base_mem=mem, cfg=_cfg(tmp_path, build_transcript_char_cap=5000),
+                    ts="t", op_id="op", model_caller=caller)
+    assert "…[truncated]" in seen["prompt"]
+    assert seen["prompt"].count("A") <= 5001        # capped well below 100k
+
+
+def test_snapshot_once_per_slug_and_manifest(tmp_path):
+    # two transcripts both yielding slug "foo": first creates, second updates → 1 snapshot
+    _mk_transcript(tmp_path / "tx" / "p", "s1")
+    _mk_transcript(tmp_path / "tx" / "p", "s2")
+    mem = tmp_path / "mem"
+    bodies = iter(["## Purpose\nv1\n", "## Purpose\nv2\n"])
+
+    def caller(prompt, schema, model, timeout):
+        return {"themes": [{"slug": "foo", "oneliner": "o", "keywords": [],
+                            "merged_markdown": next(bodies)}]}
+
+    r = build.run_build(mem, base_mem=mem, cfg=_cfg(tmp_path), ts="t", op_id="op",
+                        model_caller=caller)
+    # final body is v2
+    assert "v2" in (mem / "themes" / "foo.md").read_text()
+    # exactly one snapshot taken this op (the create had nothing to snapshot;
+    # the second write snapshotted v1)
     snaps = list((mem / "history" / "foo").glob("*.md"))
-    assert snaps and "v1" in snaps[0].read_text()
-    man = json.loads((mem / "history" / "_ops" / "op2.json").read_text())
-    assert man["themes"][0]["action"] == "updated"
+    assert len(snaps) == 1 and "v1" in snaps[0].read_text()
+    man = json.loads((mem / "history" / "_ops" / "op.json").read_text())
+    assert man["themes"][0]["slug"] == "foo"
+    assert man["themes"][0]["action"] == "created"   # didn't exist at op start
+
+
+def test_model_error_is_resumable(tmp_path):
+    _mk_transcript(tmp_path / "tx" / "p", "s1")
+    _mk_transcript(tmp_path / "tx" / "p", "s2")
+    mem = tmp_path / "mem"
+
+    def boom(prompt, schema, model, timeout):
+        raise RuntimeError("api down")
+
+    r = build.run_build(mem, base_mem=mem, cfg=_cfg(tmp_path), ts="t", op_id="op",
+                        model_caller=boom)
+    assert r["errors"]                               # error captured, not raised
+    assert r["transcripts_processed"] == 0           # none completed
+    # nothing marked processed → a later successful run will retry
+    assert not (mem / "processed.log").exists() or \
+        (mem / "processed.log").read_text().strip() == ""
+
+
+def test_no_transcripts_is_noop(tmp_path):
+    mem = tmp_path / "mem"
+    r = build.run_build(mem, base_mem=mem, cfg=_cfg(tmp_path), ts="t", op_id="op",
+                        model_caller=lambda *a: {"themes": []})
+    assert r["themes_written"] == 0
+    assert r["transcripts_processed"] == 0

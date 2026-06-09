@@ -6,7 +6,7 @@ import formats
 import slugs as slugmod
 import locking
 import snapshot
-import transcripts as tx
+import transcripts
 import model as modelmod
 
 _SKILL = (Path(__file__).resolve().parent.parent
@@ -54,63 +54,104 @@ def _load_existing(mem: Path) -> dict:
     return out
 
 
+def _sid(path) -> str:
+    return Path(path).stem
+
+
+def read_processed(mem: Path) -> set:
+    p = paths.processed_path(mem)
+    if not p.exists():
+        return set()
+    return {ln.strip() for ln in p.read_text().splitlines() if ln.strip()}
+
+
+def append_processed(mem: Path, sid: str) -> None:
+    with open(paths.processed_path(mem), "a") as f:
+        f.write(sid + "\n")
+
+
 def run_build(mem: Path, base_mem: Path, cfg: dict, ts: str, op_id: str,
               model_caller=None) -> dict:
-    """Build base-scope memory from all transcripts. Returns a receipt dict."""
+    """Incrementally build base-scope memory: one model call per NEW transcript,
+    newest first, capped, resumable via processed.log. Returns a receipt dict."""
     mem = Path(mem); base_mem = Path(base_mem)
     paths.ensure_memory_layout(mem)
 
     tdir = paths.transcript_dir(cfg)
-    files = tx.discover_transcripts(tdir)
-    text = "\n\n".join(tx.read_transcript(f)[1] for f in files).strip()
-    if not text:
-        return {"themes_written": 0, "themes": []}
+    files = transcripts.discover_transcripts(tdir)
+    files = sorted(files, key=lambda f: f.stat().st_mtime, reverse=True)  # newest first
+    done = read_processed(mem)
+    todo = [f for f in files if _sid(f) not in done][:cfg["build_max_transcripts"]]
+    if not todo:
+        return {"themes_written": 0, "themes": [],
+                "transcripts_processed": 0, "errors": []}
 
     if model_caller is None:
         def model_caller(prompt, schema, model, timeout):
             return modelmod.call_model(prompt, schema, model, timeout)
 
-    existing = _load_existing(mem)
-    prompt = _engine_prompt(text, existing)
-    result = model_caller(prompt, ENGINE_A_SCHEMA,
-                          cfg["writeup_model"], cfg["writeup_call_timeout_sec"])
+    cap = cfg["build_transcript_char_cap"]
+    snapped = set()             # slugs snapshotted this op (snapshot once)
+    manifest_by_slug = {}
+    index_touched = {}
+    errors = []
+    processed_count = 0
 
-    manifest_entries = []
-    index_entries = []
-    written = 0
     with locking.lock(mem, timeout=cfg["writeup_lock_timeout_sec"]):
-        for t in result.get("themes", []):
-            slug = slugmod.normalize_slug(t["slug"])
-            existed = (paths.themes_dir(mem) / f"{slug}.md").exists()
-            snap = snapshot.snapshot_theme(mem, slug, op_id, ts)
-            theme = {"slug": slug, "scope": "base", "updated": ts,
-                     "sources": [], "body": t["merged_markdown"]}
-            locking.atomic_write(paths.themes_dir(mem) / f"{slug}.md",
-                                 formats.serialize_theme(theme))
-            manifest_entries.append({
-                "scope": "base", "scope_dir": str(mem), "slug": slug,
-                "action": "updated" if existed else "created",
-                "snapshot": str(snap) if snap else None,
-            })
-            index_entries.append({
-                "slug": slug, "oneliner": t["oneliner"],
-                "keywords": t.get("keywords", []),
-                "path": f"themes/{slug}.md",
-            })
-            written += 1
+        start_existing = {f.stem for f in paths.themes_dir(mem).glob("*.md")}
+        for f in todo:
+            sid = _sid(f)
+            _, raw = transcripts.read_transcript(f)
+            text = raw.strip()
+            if len(text) > cap:
+                text = text[:cap] + "\n…[truncated]"
+            if not text:
+                append_processed(mem, sid); processed_count += 1
+                continue
+            existing = _load_existing(mem)      # reloaded each iter (grows)
+            try:
+                result = model_caller(_engine_prompt(text, existing),
+                                      ENGINE_A_SCHEMA, cfg["writeup_model"],
+                                      cfg["writeup_call_timeout_sec"])
+            except Exception as e:              # noqa: BLE001 - resilience boundary
+                errors.append({"session": sid, "error": str(e)[:200]})
+                break                            # stop; processed ones persist, rerun resumes
+            for t in result.get("themes", []):
+                slug = slugmod.normalize_slug(t["slug"])
+                if slug not in snapped:
+                    snap = snapshot.snapshot_theme(mem, slug, op_id, ts)
+                    if snap is not None:
+                        snapped.add(slug)
+                    manifest_by_slug[slug] = {
+                        "scope": "base", "scope_dir": str(mem), "slug": slug,
+                        "action": "updated" if slug in start_existing else "created",
+                        "snapshot": str(snap) if snap else None,
+                    }
+                theme = {"slug": slug, "scope": "base", "updated": ts,
+                         "sources": [], "body": t["merged_markdown"]}
+                locking.atomic_write(paths.themes_dir(mem) / f"{slug}.md",
+                                     formats.serialize_theme(theme))
+                index_touched[slug] = {
+                    "slug": slug, "oneliner": t["oneliner"],
+                    "keywords": t.get("keywords", []),
+                    "path": f"themes/{slug}.md",
+                }
+            append_processed(mem, sid); processed_count += 1
 
-        # Merge with any pre-existing index entries not touched this run.
         idx_path = paths.index_path(mem)
         prior = formats.parse_index(idx_path.read_text()) if idx_path.exists() else []
         by_slug = {e["slug"]: e for e in prior}
-        for e in index_entries:
-            by_slug[e["slug"]] = e
-        locking.atomic_write(idx_path,
-                             formats.serialize_index(list(by_slug.values()), "base"))
+        by_slug.update(index_touched)
+        if index_touched:
+            locking.atomic_write(idx_path,
+                                 formats.serialize_index(list(by_slug.values()), "base"))
+        if manifest_by_slug:
+            snapshot.write_manifest(base_mem, op_id, list(manifest_by_slug.values()))
 
-        snapshot.write_manifest(base_mem, op_id, manifest_entries)
-
-    return {"themes_written": written, "themes": [e["slug"] for e in index_entries]}
+    return {"themes_written": len(index_touched),
+            "themes": list(index_touched.keys()),
+            "transcripts_processed": processed_count,
+            "errors": errors}
 
 
 def _now_iso():
