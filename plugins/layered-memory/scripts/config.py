@@ -7,7 +7,7 @@ DEFAULTS = {
     "summary_max_lines": 120,
     "index_max_lines": 200,
     "writeup_model": "claude-haiku-4-5",   # cheap model for the live SessionStart write-up (Plan 2)
-    "build_model": "claude-sonnet-4-6",    # stronger model for /memory:build (better theme abstraction)
+    "build_model": "claude-haiku-4-5",     # model for /memory:build (cheap; consolidation handled by the prompt)
     "transcript_dir": None,
     "nudge_idle_turns": 6,
     "writeup_lock_timeout_sec": 30,

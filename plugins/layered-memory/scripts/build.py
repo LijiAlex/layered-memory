@@ -70,6 +70,16 @@ def _sid(path) -> str:
     return Path(path).stem
 
 
+def _head_tail(text: str, cap: int) -> str:
+    """Keep a transcript within `cap` chars WITHOUT losing the ending. For an oversized
+    transcript, take the first half + the last half (decisions/resolutions usually land at
+    the end), joined by a marker — instead of just the opening."""
+    if len(text) <= cap:
+        return text
+    half = cap // 2
+    return text[:half] + "\n\n…[truncated middle]…\n\n" + text[-half:]
+
+
 def read_processed(mem: Path) -> set:
     p = paths.processed_path(mem)
     if not p.exists():
@@ -114,9 +124,7 @@ def run_build(mem: Path, base_mem: Path, cfg: dict, ts: str, op_id: str,
         for f in todo:
             sid = _sid(f)
             _, raw = transcripts.read_transcript(f)
-            text = raw.strip()
-            if len(text) > cap:
-                text = text[:cap] + "\n…[truncated]"
+            text = _head_tail(raw.strip(), cap)
             if not text:
                 append_processed(mem, sid); processed_count += 1
                 continue

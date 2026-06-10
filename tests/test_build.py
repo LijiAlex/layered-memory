@@ -109,10 +109,19 @@ def test_max_transcripts_cap(tmp_path):
     assert calls["n"] == 2                          # capped
 
 
-def test_char_cap_truncates_prompt(tmp_path):
-    # use a rare filler char ('Z') so the count measures ONLY transcript content,
-    # not capital letters that appear in the engine prompt/skill text.
-    big = "Z" * 100_000
+def test_head_tail_keeps_start_and_end():
+    text = "HEAD" + ("x" * 1000) + "TAIL"
+    out = build._head_tail(text, cap=100)
+    assert out.startswith("HEAD")                  # start kept
+    assert out.endswith("TAIL")                    # end kept (not lost to truncation)
+    assert "truncated middle" in out
+    # short text is returned untouched
+    assert build._head_tail("short", cap=100) == "short"
+
+
+def test_char_cap_samples_head_and_tail_in_prompt(tmp_path):
+    # 'H' marks the session start, 'T' the end; filler 'Z' in between.
+    big = "H" * 100 + "Z" * 100_000 + "T" * 100
     _mk_transcript(tmp_path / "tx" / "p", "s1", content=big)
     mem = tmp_path / "mem"
     seen = {}
@@ -123,8 +132,10 @@ def test_char_cap_truncates_prompt(tmp_path):
 
     build.run_build(mem, base_mem=mem, cfg=_cfg(tmp_path, build_transcript_char_cap=5000),
                     ts="t", op_id="op", model_caller=caller)
-    assert "…[truncated]" in seen["prompt"]
-    assert seen["prompt"].count("Z") <= 5001        # transcript capped well below 100k
+    assert "truncated middle" in seen["prompt"]
+    assert "HHHH" in seen["prompt"]                 # session START present
+    assert "TTTT" in seen["prompt"]                 # session END present (the win)
+    assert seen["prompt"].count("Z") <= 5001        # middle still capped
 
 
 def test_snapshot_once_per_slug_and_manifest(tmp_path):
