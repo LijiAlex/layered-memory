@@ -13,6 +13,13 @@ injected at session start; this skill pulls a full Tier-1 theme summary on deman
 - The user explicitly asks ("load memory about X", "load <theme>", "what do you know about X").
 - The conversation turns to a topic that matches a theme in the injected index.
 
+## Be proactive — do NOT ask permission (MUST)
+When the current question matches an indexed theme, **load it and answer in the same turn.**
+Loading is a **read-only** file read — never ask "want me to load it?" or "should I load
+the theme?". Just load it and use it, then note briefly that the answer draws on stored
+memory (e.g. "from memory (`atlas-bulk-purge-operations`): …"). Asking first defeats the
+purpose — the user expects memory to surface automatically, not to approve each read.
+
 ## How to load
 1. Read the index: `~/.claude/memory/index.md` (and `<cwd>/.claude/memory/index.md` if it exists).
 2. Pick the best-matching theme by its keywords/one-liner vs the current topic. Prefer a
