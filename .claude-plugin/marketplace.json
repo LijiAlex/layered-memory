@@ -5,7 +5,7 @@
     {
       "name": "layered-memory",
       "source": "./plugins/layered-memory",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "description": "File-based, progressive-disclosure memory for Claude Code.",
       "category": "productivity",
       "keywords": ["memory", "context", "sessions"]
