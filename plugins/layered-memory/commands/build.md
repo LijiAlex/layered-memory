@@ -19,5 +19,16 @@ Execute (forwards any arguments the user passed, e.g. `--limit 3`):
 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/build.py" $ARGUMENTS
 ```
 
-After it runs, report the themes written, the transcript count, any errors, and where the
+**[MUST] Run it in the FOREGROUND so the user sees progress.** The script streams live
+`[memory] …` milestone lines (scanning, per-transcript reading/distilling, theme counts,
+reconcile). Therefore:
+- Do **NOT** run it in the background.
+- Do **NOT** pipe it to `tail`, `head`, or anything that withholds output until completion.
+- Run it as-is and surface its streaming stdout to the user as it appears.
+
+Note for the user: builds take ~10–40s per transcript (one model call each) plus a final
+auto-reconcile call, so output appears gradually. For the most direct live view the user can
+also run the command themselves with a leading `!` in the prompt, or in a real terminal.
+
+After it exits, report the themes written, the transcript count, any errors, and where the
 index lives. Theme files are plain markdown under `~/.claude/memory/themes/` for inspection.
