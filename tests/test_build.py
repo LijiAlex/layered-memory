@@ -26,7 +26,7 @@ def test_parse_args_limit():
 def test_main_applies_limit(monkeypatch, tmp_path):
     captured = {}
 
-    def fake_run_build(mem, base_mem, cfg, ts, op_id, model_caller=None):
+    def fake_run_build(mem, base_mem, cfg, ts, op_id, model_caller=None, progress=None):
         captured["limit"] = cfg["build_max_transcripts"]
         return {"themes_written": 0, "themes": [], "transcripts_processed": 0,
                 "errors": []}
@@ -202,6 +202,25 @@ def test_one_failure_does_not_abort_the_batch(tmp_path):
     assert r["transcripts_processed"] == 1       # only the success marked done
     done = set((mem / "processed.log").read_text().split())
     assert len(done) == 1                         # failed transcript NOT marked → retries later
+
+
+def test_progress_callback_emits_milestones(tmp_path):
+    _mk_transcript(tmp_path / "tx" / "p", "s1")
+    mem = tmp_path / "mem"
+    msgs = []
+
+    def caller(prompt, schema, model, timeout):
+        return {"themes": [{"slug": "t", "oneliner": "o", "keywords": [],
+                            "merged_markdown": "## Purpose\nx\n"}]}
+
+    build.run_build(mem, base_mem=mem, cfg=_cfg(tmp_path), ts="t", op_id="op",
+                    model_caller=caller, progress=msgs.append)
+    blob = "\n".join(msgs).lower()
+    assert "scanning" in blob
+    assert "reading transcript" in blob
+    assert "theme" in blob          # per-transcript theme count line
+    assert "index" in blob          # index update line
+    assert "done." in blob
 
 
 def test_no_transcripts_is_noop(tmp_path):
