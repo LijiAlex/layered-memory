@@ -80,16 +80,37 @@ def _head_tail(text: str, cap: int) -> str:
     return text[:half] + "\n\n…[truncated middle]…\n\n" + text[-half:]
 
 
-def read_processed(mem: Path) -> set:
+def read_processed(mem: Path) -> dict:
+    """Return {session_id: recorded_mtime}. mtime is None for legacy sid-only rows
+    (treated as 'done'). Later rows win (a re-ingest appends a fresh row)."""
     p = paths.processed_path(mem)
+    out = {}
     if not p.exists():
-        return set()
-    return {ln.strip() for ln in p.read_text().splitlines() if ln.strip()}
+        return out
+    for ln in p.read_text().splitlines():
+        ln = ln.strip()
+        if not ln or ln.startswith("#"):
+            continue
+        parts = ln.split()
+        out[parts[0]] = float(parts[1]) if len(parts) > 1 else None
+    return out
 
 
-def append_processed(mem: Path, sid: str) -> None:
+def append_processed(mem: Path, sid: str, mtime: float) -> None:
     with open(paths.processed_path(mem), "a") as f:
-        f.write(sid + "\n")
+        f.write(f"{sid} {mtime}\n")
+
+
+def _already_ingested(f: Path, done: dict) -> bool:
+    """Done only if the sid is recorded AND the transcript hasn't grown since (recorded
+    mtime ≥ current). A live/extended session has a newer mtime → re-ingest."""
+    sid = _sid(f)
+    if sid not in done:
+        return False
+    recorded = done[sid]
+    if recorded is None:            # legacy row without mtime → treat as done
+        return True
+    return f.stat().st_mtime <= recorded + 0.5
 
 
 def run_build(mem: Path, base_mem: Path, cfg: dict, ts: str, op_id: str,
@@ -104,9 +125,10 @@ def run_build(mem: Path, base_mem: Path, cfg: dict, ts: str, op_id: str,
     tdir = paths.transcript_dir(cfg)
     emit(f"scanning transcripts in {tdir} …")
     files = transcripts.discover_transcripts(tdir)
-    files = sorted(files, key=lambda f: f.stat().st_mtime, reverse=True)  # newest first
+    files = sorted(files, key=lambda f: f.stat().st_mtime)  # oldest first (least likely
+    #                                       still growing; newest/active sessions go last)
     done = read_processed(mem)
-    todo = [f for f in files if _sid(f) not in done][:cfg["build_max_transcripts"]]
+    todo = [f for f in files if not _already_ingested(f, done)][:cfg["build_max_transcripts"]]
     emit(f"found {len(files)} transcript(s); {len(done)} already done → "
          f"{len(todo)} to ingest this run (cap {cfg['build_max_transcripts']})")
     if not todo:
@@ -130,12 +152,13 @@ def run_build(mem: Path, base_mem: Path, cfg: dict, ts: str, op_id: str,
         start_existing = {f.stem for f in paths.themes_dir(mem).glob("*.md")}
         for i, f in enumerate(todo, 1):
             sid = _sid(f)
+            mt = f.stat().st_mtime           # recorded in the ledger so growth re-ingests
             emit(f"[{i}/{n}] reading transcript {sid[:8]} …")
             _, raw = transcripts.read_transcript(f)
             text = _head_tail(raw.strip(), cap)
             if not text:
                 emit(f"[{i}/{n}] {sid[:8]} empty — skipped")
-                append_processed(mem, sid); processed_count += 1
+                append_processed(mem, sid, mt); processed_count += 1
                 continue
             existing = _load_existing(mem)      # reloaded each iter (grows)
             emit(f"[{i}/{n}] {sid[:8]} → distilling ({len(text)} chars) …")
@@ -172,7 +195,7 @@ def run_build(mem: Path, base_mem: Path, cfg: dict, ts: str, op_id: str,
                     "keywords": t.get("keywords", []),
                     "path": f"themes/{slug}.md",
                 }
-            append_processed(mem, sid); processed_count += 1
+            append_processed(mem, sid, mt); processed_count += 1
 
         idx_path = paths.index_path(mem)
         prior = formats.parse_index(idx_path.read_text()) if idx_path.exists() else []

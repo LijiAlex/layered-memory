@@ -67,9 +67,72 @@ def test_one_call_per_transcript_and_themes_written(tmp_path):
     assert calls["n"] == 2                         # one call per transcript
     assert r["transcripts_processed"] == 2
     assert set(r["themes"]) == {"theme1", "theme2"}
-    # ledger records both sessions
-    done = (mem / "processed.log").read_text().split()
-    assert set(done) == {"s1", "s2"}
+    # ledger records both sessions (first column per row is the sid)
+    sids = {ln.split()[0] for ln in (mem / "processed.log").read_text().splitlines()
+            if ln.strip()}
+    assert sids == {"s1", "s2"}
+
+
+def test_oldest_transcript_first(tmp_path):
+    import os
+    _mk_transcript(tmp_path / "tx" / "p", "older")
+    _mk_transcript(tmp_path / "tx" / "p", "newer")
+    older = tmp_path / "tx" / "p" / "older.jsonl"
+    newer = tmp_path / "tx" / "p" / "newer.jsonl"
+    os.utime(older, (1000, 1000))                 # clearly older mtime
+    os.utime(newer, (9000, 9000))                 # clearly newer mtime
+    mem = tmp_path / "mem"
+
+    def caller(prompt, schema, model, timeout):
+        return {"themes": []}
+
+    # cap to 1 → only the OLDEST should be ingested this run
+    build.run_build(mem, base_mem=mem, cfg=_cfg(tmp_path, build_max_transcripts=1),
+                    ts="t", op_id="op", model_caller=caller)
+    sids = {ln.split()[0] for ln in (mem / "processed.log").read_text().splitlines()
+            if ln.strip()}
+    assert sids == {"older"}                       # oldest first, newest left for later
+
+
+def test_grown_transcript_is_reingested(tmp_path):
+    import os
+    _mk_transcript(tmp_path / "tx" / "p", "s1")
+    f = tmp_path / "tx" / "p" / "s1.jsonl"
+    mem = tmp_path / "mem"
+    calls = {"n": 0}
+
+    def caller(prompt, schema, model, timeout):
+        calls["n"] += 1
+        return {"themes": [{"slug": "t", "oneliner": "o", "keywords": [],
+                            "merged_markdown": "## Purpose\nx\n"}]}
+
+    build.run_build(mem, base_mem=mem, cfg=_cfg(tmp_path), ts="t1", op_id="op1",
+                    model_caller=caller)
+    assert calls["n"] == 1
+    # session continues → file grows + mtime advances past the recorded value
+    f.write_text(f.read_text() + '{"message":{"role":"user","content":"more"}}\n')
+    st = f.stat()
+    os.utime(f, (st.st_atime + 1000, st.st_mtime + 1000))
+    build.run_build(mem, base_mem=mem, cfg=_cfg(tmp_path), ts="t2", op_id="op2",
+                    model_caller=caller)
+    assert calls["n"] == 2                          # grown → re-ingested, not skipped
+
+
+def test_unchanged_transcript_skipped_on_rerun(tmp_path):
+    _mk_transcript(tmp_path / "tx" / "p", "s1")
+    mem = tmp_path / "mem"
+    calls = {"n": 0}
+
+    def caller(prompt, schema, model, timeout):
+        calls["n"] += 1
+        return {"themes": [{"slug": "t", "oneliner": "o", "keywords": [],
+                            "merged_markdown": "## Purpose\nx\n"}]}
+
+    build.run_build(mem, base_mem=mem, cfg=_cfg(tmp_path), ts="t1", op_id="op1",
+                    model_caller=caller)
+    build.run_build(mem, base_mem=mem, cfg=_cfg(tmp_path), ts="t2", op_id="op2",
+                    model_caller=caller)
+    assert calls["n"] == 1                          # unchanged file → skipped 2nd run
 
 
 def test_rerun_skips_processed(tmp_path):
@@ -200,8 +263,9 @@ def test_one_failure_does_not_abort_the_batch(tmp_path):
     assert r["themes_written"] == 1              # the second one still ingested
     assert len(r["errors"]) == 1                 # the first recorded as an error
     assert r["transcripts_processed"] == 1       # only the success marked done
-    done = set((mem / "processed.log").read_text().split())
-    assert len(done) == 1                         # failed transcript NOT marked → retries later
+    sids = {ln.split()[0] for ln in (mem / "processed.log").read_text().splitlines()
+            if ln.strip()}
+    assert len(sids) == 1                         # failed transcript NOT marked → retries later
 
 
 def test_progress_callback_emits_milestones(tmp_path):
