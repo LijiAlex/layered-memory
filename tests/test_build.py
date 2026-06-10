@@ -73,6 +73,20 @@ def test_one_call_per_transcript_and_themes_written(tmp_path):
     assert sids == {"s1", "s2"}
 
 
+def test_build_uses_build_call_timeout(tmp_path):
+    _mk_transcript(tmp_path / "tx" / "p", "s1")
+    got = {}
+
+    def caller(prompt, schema, model, timeout):
+        got["t"] = timeout
+        return {"themes": []}
+
+    build.run_build(tmp_path / "mem", base_mem=tmp_path / "mem",
+                    cfg=_cfg(tmp_path, build_call_timeout_sec=123),
+                    ts="t", op_id="op", model_caller=caller)
+    assert got["t"] == 123
+
+
 def test_oldest_transcript_first(tmp_path):
     import os
     _mk_transcript(tmp_path / "tx" / "p", "older")

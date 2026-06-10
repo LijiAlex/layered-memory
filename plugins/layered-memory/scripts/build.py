@@ -138,7 +138,10 @@ def run_build(mem: Path, base_mem: Path, cfg: dict, ts: str, op_id: str,
 
     if model_caller is None:
         def model_caller(prompt, schema, model, timeout):
-            return modelmod.call_model(prompt, schema, model, timeout)
+            return modelmod.call_model(
+                prompt, schema, model, timeout,
+                max_retries=cfg.get("max_call_retries", 0),
+                on_retry=lambda nt: emit(f"… call timed out — retrying at {nt}s"))
 
     cap = cfg["build_transcript_char_cap"]
     n = len(todo)
@@ -166,7 +169,8 @@ def run_build(mem: Path, base_mem: Path, cfg: dict, ts: str, op_id: str,
                 result = model_caller(_engine_prompt(text, existing),
                                       ENGINE_A_SCHEMA,
                                       cfg.get("build_model") or cfg["writeup_model"],
-                                      cfg["writeup_call_timeout_sec"])
+                                      cfg.get("build_call_timeout_sec")
+                                      or cfg["writeup_call_timeout_sec"])
             except Exception as e:              # noqa: BLE001 - resilience boundary
                 emit(f"[{i}/{n}] {sid[:8]} ERROR: {str(e)[:80]} — skipped, retries next run")
                 errors.append({"session": sid, "error": str(e)[:200]})

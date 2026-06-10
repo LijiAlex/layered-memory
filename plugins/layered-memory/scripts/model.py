@@ -49,8 +49,13 @@ def _default_runner(argv, env, input_text, timeout):
 
 
 def call_model(prompt: str, schema: dict, model: str, timeout: int,
-               runner=_default_runner) -> dict:
+               runner=_default_runner, max_retries: int = 0, on_retry=None) -> dict:
     """Call the model and return the schema-conforming object.
+
+    On a TIMEOUT (subprocess.TimeoutExpired) the call is retried with double the timeout,
+    up to `max_retries` times — so a borderline-slow call usually finishes in this pass.
+    Non-timeout errors (auth, bad JSON, nonzero exit) are NOT retried (more time won't help).
+    `on_retry(new_timeout)` is called before each retry (for progress logging).
 
     Handles three shapes of `raw`:
     - CC envelope with `structured_output` (real `claude -p --output-format json`) → unwrap it.
@@ -58,7 +63,20 @@ def call_model(prompt: str, schema: dict, model: str, timeout: int,
     - bare object (unit-test fakes / direct schema dict) → returned as-is.
     """
     argv, env = _build_invocation(prompt, schema, model)
-    raw = runner(argv, env, "", timeout)        # prompt is in argv; stdin empty
+    attempt_timeout = timeout
+    attempts = max_retries + 1
+    raw = None
+    for i in range(attempts):
+        try:
+            raw = runner(argv, env, "", attempt_timeout)   # prompt is in argv; stdin empty
+            break
+        except subprocess.TimeoutExpired:
+            if i == attempts - 1:
+                raise ModelError(f"timed out after {attempts} attempt(s) "
+                                 f"(final {attempt_timeout}s)")
+            attempt_timeout *= 2
+            if on_retry:
+                on_retry(attempt_timeout)
     try:
         obj = json.loads(raw)
     except json.JSONDecodeError as e:

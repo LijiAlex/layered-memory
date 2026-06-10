@@ -1,5 +1,49 @@
 import json
+import subprocess
 import model
+
+
+def test_escalates_timeout_then_succeeds():
+    seen = []
+
+    def fake(argv, env, input_text, timeout):
+        seen.append(timeout)
+        if len(seen) == 1:
+            raise subprocess.TimeoutExpired(cmd="claude", timeout=timeout)
+        return json.dumps({"themes": [{"slug": "x"}]})
+
+    retries = []
+    out = model.call_model("P", {}, "m", timeout=100, runner=fake,
+                           max_retries=1, on_retry=lambda nt: retries.append(nt))
+    assert out["themes"][0]["slug"] == "x"
+    assert seen == [100, 200]                 # retried with doubled timeout
+    assert retries == [200]
+
+
+def test_timeout_exhausts_retries_then_raises():
+    def fake(argv, env, input_text, timeout):
+        raise subprocess.TimeoutExpired(cmd="claude", timeout=timeout)
+
+    try:
+        model.call_model("P", {}, "m", timeout=100, runner=fake, max_retries=1)
+        assert False, "expected ModelError"
+    except model.ModelError:
+        pass
+
+
+def test_non_timeout_error_is_not_retried():
+    seen = []
+
+    def fake(argv, env, input_text, timeout):
+        seen.append(timeout)
+        raise model.ModelError("auth bad")     # not a timeout
+
+    try:
+        model.call_model("P", {}, "m", timeout=100, runner=fake, max_retries=1)
+        assert False, "expected ModelError"
+    except model.ModelError:
+        pass
+    assert len(seen) == 1                       # NOT retried
 
 
 def test_build_argv_has_guards():

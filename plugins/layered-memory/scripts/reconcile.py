@@ -41,12 +41,16 @@ def run_reconcile(mem: Path, base_mem: Path, cfg: dict, ts: str, op_id: str,
 
     if model_caller is None:
         def model_caller(prompt, schema, model, timeout):
-            return modelmod.call_model(prompt, schema, model, timeout)
+            return modelmod.call_model(
+                prompt, schema, model, timeout,
+                max_retries=cfg.get("max_call_retries", 0),
+                on_retry=lambda nt: emit(f"… reconcile timed out — retrying at {nt}s"))
 
     emit(f"reconcile: consolidating {len(bodies)} themes …")
     result = model_caller(_reconcile_prompt(bodies), ENGINE_A_SCHEMA,
                           cfg.get("build_model") or cfg["writeup_model"],
-                          cfg["writeup_call_timeout_sec"])
+                          cfg.get("reconcile_call_timeout_sec")
+                          or cfg["writeup_call_timeout_sec"])
     new_themes = result.get("themes", [])
     if not new_themes:
         # Safety: never wipe the whole set on a bad/empty model response.

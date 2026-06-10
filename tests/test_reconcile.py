@@ -45,6 +45,23 @@ def test_merges_overlapping_themes(tmp_path):
     assert actions["layered-memory-plugin-setup-and-timeout-tuning"] == "deleted"
 
 
+def test_reconcile_uses_reconcile_call_timeout(tmp_path):
+    mem = tmp_path / "mem"
+    _write_theme(mem, "a")
+    _write_theme(mem, "b")
+    got = {}
+
+    def caller(prompt, schema, model, timeout):
+        got["t"] = timeout
+        return {"themes": [{"slug": "ab", "oneliner": "o", "keywords": [],
+                            "merged_markdown": "## Purpose\nx\n"}]}
+
+    cfg = _cfg(); cfg["reconcile_call_timeout_sec"] = 321
+    reconcile.run_reconcile(mem, base_mem=mem, cfg=cfg, ts="t", op_id="op",
+                            model_caller=caller)
+    assert got["t"] == 321
+
+
 def test_noop_under_two_themes(tmp_path):
     mem = tmp_path / "mem"
     _write_theme(mem, "solo")
