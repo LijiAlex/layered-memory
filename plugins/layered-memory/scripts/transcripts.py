@@ -7,7 +7,10 @@ def discover_transcripts(tdir: Path) -> list:
     tdir = Path(tdir)
     if not tdir.exists():
         return []
-    return sorted(tdir.rglob("*.jsonl"))
+    # Skip subagent transcripts (…/subagents/agent-*.jsonl): the parent session already
+    # captures the main agent's summary of a subagent's results, so ingesting these
+    # standalone fragments memory with context-free agent sessions.
+    return sorted(p for p in tdir.rglob("*.jsonl") if "subagents" not in p.parts)
 
 
 def _content_to_text(content) -> str:
