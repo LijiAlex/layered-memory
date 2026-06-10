@@ -230,6 +230,19 @@ def main(argv=None):
         print(f"  ! {len(receipt['errors'])} error(s): {receipt['errors'][0]['error'][:120]}")
     print(f"  index: {paths.index_path(base)}")
 
+    # Auto-consolidate: merge any overlapping/duplicate themes the per-transcript pass
+    # created (the per-call model won't reliably dedup; Engine B sees the whole set).
+    try:
+        import reconcile
+        rec = reconcile.run_reconcile(base, base_mem=base, cfg=cfg, ts=ts,
+                                      op_id=f"reconcile-{ts.replace(':', '-')}",
+                                      progress=_log)
+        if rec.get("merged"):
+            print(f"[memory] reconcile → {rec['themes_before']}→{rec['themes_after']} "
+                  f"themes (merged {rec['merged']})")
+    except Exception as e:                        # never let reconcile break the build
+        print(f"[memory] reconcile skipped: {str(e)[:120]}")
+
 
 if __name__ == "__main__":
     main()
