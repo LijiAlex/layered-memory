@@ -1,6 +1,37 @@
 # layered-memory
 
+> Persistent memory for Claude Code — as plain markdown files you can read, diff, and delete.
+
+[![Claude Code Plugin](https://img.shields.io/badge/Claude%20Code-plugin-d97757)](https://docs.claude.com/en/docs/claude-code)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
+[![Python](https://img.shields.io/badge/python-stdlib-3776ab.svg)](#development)
+[![No database](https://img.shields.io/badge/storage-markdown-informational.svg)](#how-it-works)
+
 A **file-based, progressive-disclosure memory layer for Claude Code** — distills your past sessions into per-theme markdown summaries and surfaces the relevant one automatically in future sessions. Plain markdown on disk: **no database, no vector store, no background service.** Auditable, git-versionable, and removable.
+
+```text
+~/.claude/memory/
+├── index.md                 # tiny table of contents, injected every session
+└── themes/
+    ├── govfoun-438-timeout.md
+    ├── atlas-bulk-purge.md
+    └── layered-memory-plugin.md
+```
+
+---
+
+## Why file-based?
+
+| | layered-memory | Vector-DB memory |
+|---|---|---|
+| **Storage** | plain markdown on disk | embeddings in a DB/service |
+| **Inspect / edit** | open the file, `git diff` | opaque vectors |
+| **Infra** | none | DB or vector store to run |
+| **Retrieval** | keyword theme-match, deterministic | similarity search, fuzzy |
+| **Remove** | delete the files | DB migration |
+| **Trust model** | loaded as untrusted reference, never instructions | varies |
+
+Built for the case where you want memory you can **audit and own**, not a black box.
 
 ---
 
@@ -81,7 +112,9 @@ Start a new session and ask about something you've worked on — the matching th
 
 ---
 
-## What's pending
+## Roadmap
+
+Working today: build, incremental re-build, automatic theme surfacing, consolidation, on-disk undo snapshots, clean uninstall. Planned next:
 
 - **Live auto-capture** (capture as you work + write-up at session end, so no manual `/build`) — the biggest missing piece.
 - **`/layered-memory:undo`** — undo manifests are written, but no replay command yet.
