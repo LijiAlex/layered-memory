@@ -7,7 +7,7 @@
 [![Python](https://img.shields.io/badge/python-stdlib-3776ab.svg)](#development)
 [![No database](https://img.shields.io/badge/storage-markdown-informational.svg)](#how-it-works)
 
-A **file-based, progressive-disclosure memory layer for Claude Code** — distills your past sessions into per-theme markdown summaries and surfaces the relevant one automatically in future sessions. Plain markdown on disk: **no database, no vector store, no background service.** Auditable, git-versionable, and removable.
+**Persistent memory for Claude Code.** layered-memory is a **Claude Code plugin** that gives Claude long-term memory across sessions — it distills your past Claude Code sessions into per-theme markdown summaries and automatically surfaces the relevant context in new sessions, so you stop re-explaining your project every time. Plain markdown on disk: **no database, no vector store, no background service.** Auditable, git-versionable, and removable.
 
 ```text
 ~/.claude/memory/
@@ -20,7 +20,7 @@ A **file-based, progressive-disclosure memory layer for Claude Code** — distil
 
 ---
 
-## Why file-based?
+## Why file-based memory instead of a vector database?
 
 | | layered-memory | Vector-DB memory |
 |---|---|---|
@@ -35,7 +35,7 @@ Built for the case where you want memory you can **audit and own**, not a black 
 
 ---
 
-## What it does
+## What layered-memory does for Claude Code
 
 - **Builds memory** from your past Claude Code session transcripts → per-theme summaries under `~/.claude/memory/themes/` + a tiny `index.md`.
 - **Surfaces memory automatically** — a SessionStart hook injects the index into every new session; when your question matches a theme, the assistant loads that theme and answers from it.
@@ -44,7 +44,7 @@ Built for the case where you want memory you can **audit and own**, not a black 
 
 ---
 
-## Install
+## Install the Claude Code memory plugin
 
 ```text
 /plugin marketplace add LijiAlex/layered-memory
