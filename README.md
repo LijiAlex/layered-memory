@@ -117,6 +117,8 @@ Start a new session and ask about something you've worked on — the matching th
 Working today: build, incremental re-build, automatic theme surfacing, consolidation, on-disk undo snapshots, clean uninstall. Planned next:
 
 - **Live auto-capture** (capture as you work + write-up at session end, so no manual `/build`) — the biggest missing piece.
+- **Better theme capturing** - themes captured may have overlapping context
+- **Context growth** - No stopping this. figuring out how it can be handled
 - **`/layered-memory:undo`** — undo manifests are written, but no replay command yet.
 - **Complaints reindex** — wrong-recalls are logged but not yet consumed to retune index keywords.
 - **Engine B split/prune** — currently merge-only (no theme splitting or stale-line pruning).
