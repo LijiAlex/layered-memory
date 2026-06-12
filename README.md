@@ -125,6 +125,7 @@ Working today: build, incremental re-build, automatic theme surfacing, consolida
 - **Nightly reconcile**, **per-project scope** builds, **`--reset`**, **ledger compaction**.
 - **Capture quality**: tool output and `sources:` are not yet recorded.
 - **Packaging**: privacy `<private>` exclusion, Windows/Linux support.
+- **Structure**: Move away from file structure and bring other persistent storage if required
 
 ---
 
