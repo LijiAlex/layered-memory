@@ -1,15 +1,18 @@
 """Parse/serialize theme files and index.md (spec §6). Stdlib only."""
+import json
 import re
 
 
 def serialize_theme(theme: dict) -> str:
-    sources = ", ".join(theme.get("sources", []))
+    # footprint = structured match metadata (repos/files/skills/symbols/tickets), stored as
+    # a compact JSON line. Replaces the old empty `sources: []`.
+    fp = theme.get("footprint") or {}
     body = theme.get("body", "").rstrip("\n")
     return (
         f"# {theme['slug']}\n"
         f"scope: {theme['scope']}\n"
         f"updated: {theme['updated']}\n"
-        f"sources: [{sources}]\n\n"
+        f"footprint: {json.dumps(fp, sort_keys=True)}\n\n"
         f"{body}\n"
     )
 
@@ -18,22 +21,26 @@ def parse_theme(text: str) -> dict:
     lines = text.splitlines()
     slug = lines[0][2:].strip() if lines and lines[0].startswith("# ") else ""
     scope = updated = ""
-    sources = []
+    footprint = {}
     body_start = 1
     for i, line in enumerate(lines[1:], start=1):
         if line.startswith("scope:"):
             scope = line.split(":", 1)[1].strip()
         elif line.startswith("updated:"):
             updated = line.split(":", 1)[1].strip()
+        elif line.startswith("footprint:"):
+            try:
+                footprint = json.loads(line.split(":", 1)[1].strip())
+            except (json.JSONDecodeError, ValueError):
+                footprint = {}
         elif line.startswith("sources:"):
-            inner = line.split(":", 1)[1].strip().strip("[]")
-            sources = [s.strip() for s in inner.split(",") if s.strip()]
+            pass                         # legacy field (pre-footprint) — ignored
         elif line.strip() == "":
             body_start = i + 1
             break
     body = "\n".join(lines[body_start:]).strip("\n")
     return {"slug": slug, "scope": scope, "updated": updated,
-            "sources": sources, "body": body}
+            "footprint": footprint, "body": body}
 
 
 def serialize_index(entries: list, scope_label: str) -> str:

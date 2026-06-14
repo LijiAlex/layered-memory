@@ -6,18 +6,33 @@ def test_theme_roundtrip():
         "slug": "connector-inventory",
         "scope": "base",
         "updated": "2026-06-09T10:00:00Z",
-        "sources": ["8a3f", "9b21"],
+        "footprint": {"repos": ["heracles"], "tickets": ["GOV-1"]},
         "body": "## Key facts\n- No Snowflake.\n",
     }
     text = formats.serialize_theme(theme)
     assert text.startswith("# connector-inventory\n")
     assert "scope: base" in text
-    assert "sources: [8a3f, 9b21]" in text
+    assert '"repos"' in text and "heracles" in text   # footprint stored as JSON line
     parsed = formats.parse_theme(text)
     assert parsed["slug"] == "connector-inventory"
     assert parsed["scope"] == "base"
-    assert parsed["sources"] == ["8a3f", "9b21"]
+    assert parsed["footprint"]["repos"] == ["heracles"]
+    assert parsed["footprint"]["tickets"] == ["GOV-1"]
     assert "No Snowflake." in parsed["body"]
+
+
+def test_theme_missing_footprint_defaults_empty():
+    text = formats.serialize_theme({"slug": "x", "scope": "base",
+                                    "updated": "t", "body": "b\n"})
+    assert "footprint: {}" in text
+    assert formats.parse_theme(text)["footprint"] == {}
+
+
+def test_parse_legacy_sources_theme():
+    legacy = "# old\nscope: base\nupdated: t\nsources: [a, b]\n\nbody\n"
+    parsed = formats.parse_theme(legacy)
+    assert parsed["footprint"] == {}      # legacy sources ignored, no crash
+    assert parsed["body"] == "body"
 
 
 def test_index_roundtrip():

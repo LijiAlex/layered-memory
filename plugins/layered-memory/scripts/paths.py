@@ -35,6 +35,10 @@ def complaints_path(mem: Path) -> Path:
     return mem / "complaints.log"
 
 
+def match_keys_path(mem: Path) -> Path:
+    return mem / "match-keys.json"
+
+
 def transcript_dir(cfg: dict) -> Path:
     override = cfg.get("transcript_dir")
     if override:
