@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
-"""Engine B — global theme consolidation (spec §8.5, focused: merge overlapping + reindex).
+"""Engine B — cluster-targeted consolidation (Step 5). Fixes the old all-themes timeout +
+delete-by-absence data-loss.
 
-Reads ALL current theme summaries, asks the model to merge overlapping/duplicate themes
-into one coherent set (preserving distinct facts), then rewrites themes + index and deletes
-themes that were merged away. Snapshots everything first; writes an undo manifest.
-Stdlib only. `model_caller` is injectable for tests."""
+- Find candidate duplicate CLUSTERS deterministically (resolve.score over match-keys).
+  Themes in no cluster are NEVER touched.
+- Merge one small cluster at a time (bounded model call). Resumable: a failed/garbled
+  cluster is aborted (originals kept) and the rest still process.
+- Safe-delete: within a processed cluster, delete only the input slugs the model consolidated
+  away. Abort the cluster if the result is empty, unparseable, or has MORE notes than went in.
+Stdlib only; model_caller injectable.
+"""
 from pathlib import Path
 
 import paths
@@ -13,92 +18,156 @@ import slugs as slugmod
 import locking
 import snapshot
 import model as modelmod
-from build import ENGINE_A_SCHEMA, _strip_frontmatter, _load_existing
+import footprint as fpmod
+import resolve
+from build import ENGINE_A_SCHEMA, _strip_frontmatter, _load_existing  # reused engine bits
 
 _SKILL = (Path(__file__).resolve().parent.parent
           / "skills" / "summary-to-summary" / "SKILL.md")
 
 
-def _reconcile_prompt(bodies: dict) -> str:
+def find_clusters(mk_db: dict, threshold: float = 8.0, max_size: int = 5) -> list:
+    """Union notes whose pairwise match-key overlap (resolve.score) >= threshold.
+    Returns clusters (lists of >=2 slugs), each capped to max_size."""
+    slugs = sorted(mk_db)
+    parent = {s: s for s in slugs}
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for i in range(len(slugs)):
+        for j in range(i + 1, len(slugs)):
+            if resolve.score(mk_db[slugs[i]], mk_db[slugs[j]]) >= threshold:
+                parent[find(slugs[i])] = find(slugs[j])
+
+    groups = {}
+    for s in slugs:
+        groups.setdefault(find(s), []).append(s)
+    clusters = []
+    for g in groups.values():
+        if len(g) < 2:
+            continue
+        g = sorted(g)
+        for k in range(0, len(g), max_size):       # cap each cluster's size
+            chunk = g[k:k + max_size]
+            if len(chunk) >= 2:
+                clusters.append(chunk)
+    return clusters
+
+
+def _cluster_prompt(bodies: dict) -> str:
     skill = _strip_frontmatter(_SKILL.read_text())
-    block = "\n\n".join(f"### THEME: {slug}\n{body}"
-                        for slug, body in bodies.items()) or "(none)"
+    block = "\n\n".join(f"### NOTE: {slug}\n{body}" for slug, body in bodies.items())
     return (f"{skill}\n\n"
-            f"=== CURRENT THEME SUMMARIES (merge/dedup; keep all distinct facts) ===\n"
+            f"=== CANDIDATE LOOK-ALIKE NOTES (merge these; keep all distinct facts) ===\n"
             f"{block}\n")
 
 
 def run_reconcile(mem: Path, base_mem: Path, cfg: dict, ts: str, op_id: str,
                   model_caller=None, progress=None) -> dict:
-    """Consolidate the theme set. Returns a receipt dict."""
     emit = progress or (lambda *_: None)
     mem = Path(mem); base_mem = Path(base_mem)
-    bodies = _load_existing(mem)                 # slug -> body
-    if len(bodies) < 2:
-        emit(f"reconcile: {len(bodies)} theme(s) — nothing to merge.")
-        return {"themes_before": len(bodies), "themes_after": len(bodies),
-                "merged": 0, "themes": sorted(bodies), "errors": []}
+
+    mk_db = fpmod.read_match_keys(mem)
+    if not mk_db:                                   # no match-keys yet → derive from themes
+        fpmod.write_match_keys(mem)
+        mk_db = fpmod.read_match_keys(mem)
+    before = len(mk_db)
+    if before < 2:
+        emit(f"reconcile: {before} note(s) — nothing to merge.")
+        return {"themes_before": before, "themes_after": before, "merged": 0, "errors": []}
+
+    clusters = find_clusters(mk_db, cfg.get("reconcile_cluster_threshold", 8.0),
+                             cfg.get("reconcile_cluster_max", 5))
+    if not clusters:
+        emit("reconcile: no duplicate clusters found — nothing to merge.")
+        return {"themes_before": before, "themes_after": before, "merged": 0, "errors": []}
+    emit(f"reconcile: {len(clusters)} candidate cluster(s) to merge.")
 
     if model_caller is None:
         def model_caller(prompt, schema, model, timeout):
             return modelmod.call_model(
                 prompt, schema, model, timeout,
                 max_retries=cfg.get("max_call_retries", 0),
-                on_retry=lambda nt: emit(f"… reconcile timed out — retrying at {nt}s"))
+                on_retry=lambda nt: emit(f"… reconcile cluster timed out — retrying at {nt}s"))
 
-    emit(f"reconcile: consolidating {len(bodies)} themes …")
-    result = model_caller(_reconcile_prompt(bodies), ENGINE_A_SCHEMA,
-                          cfg.get("build_model") or cfg["writeup_model"],
-                          cfg.get("reconcile_call_timeout_sec")
-                          or cfg["writeup_call_timeout_sec"])
-    new_themes = result.get("themes", [])
-    if not new_themes:
-        # Safety: never wipe the whole set on a bad/empty model response.
-        emit("reconcile: model returned no themes — aborting, kept current set.")
-        return {"themes_before": len(bodies), "themes_after": len(bodies),
-                "merged": 0, "themes": sorted(bodies), "errors": ["empty result"]}
+    rmodel = cfg.get("build_model") or cfg["writeup_model"]
+    rtimeout = cfg.get("reconcile_call_timeout_sec") or cfg["writeup_call_timeout_sec"]
+
+    idx_path = paths.index_path(mem)
+    by_slug = {e["slug"]: e for e in
+               (formats.parse_index(idx_path.read_text()) if idx_path.exists() else [])}
+    fps = {f.stem: formats.parse_theme(f.read_text()).get("footprint", {})
+           for f in paths.themes_dir(mem).glob("*.md")}
+    manifest = {}
+    merged_total = 0
+    errors = []
 
     with locking.lock(mem, timeout=cfg["writeup_lock_timeout_sec"]):
-        current = {f.stem for f in paths.themes_dir(mem).glob("*.md")}
-        manifest = {}
-        for slug in current:                     # snapshot every current theme first
-            snap = snapshot.snapshot_theme(mem, slug, op_id, ts)
-            manifest[slug] = {"scope": "base", "scope_dir": str(mem), "slug": slug,
-                              "action": "updated", "snapshot": str(snap) if snap else None}
+        for cluster in clusters:
+            bodies = {}
+            for slug in cluster:
+                tp = paths.themes_dir(mem) / f"{slug}.md"
+                if tp.exists():
+                    bodies[slug] = formats.parse_theme(tp.read_text())["body"]
+            if len(bodies) < 2:
+                continue
+            emit(f"reconcile: merging {sorted(bodies)} …")
+            try:
+                result = model_caller(_cluster_prompt(bodies), ENGINE_A_SCHEMA,
+                                      rmodel, rtimeout)
+            except Exception as e:                  # noqa: BLE001
+                emit(f"reconcile: cluster {sorted(bodies)} errored ({str(e)[:60]}) — kept")
+                errors.append({"cluster": sorted(bodies), "error": str(e)[:200]})
+                continue
+            new = result.get("themes", [])
+            if not new or len(new) > len(bodies):    # garbled/expanded → abort, keep originals
+                emit(f"reconcile: cluster {sorted(bodies)} bad result — kept (no delete)")
+                errors.append({"cluster": sorted(bodies), "error": "bad result"})
+                continue
 
-        new_slugs = set()
-        index_entries = []
-        for t in new_themes:
-            slug = slugmod.normalize_slug(t["slug"])
-            new_slugs.add(slug)
-            theme = {"slug": slug, "scope": "base", "updated": ts,
-                     "sources": [], "body": t["merged_markdown"]}
-            locking.atomic_write(paths.themes_dir(mem) / f"{slug}.md",
-                                 formats.serialize_theme(theme))
-            index_entries.append({"slug": slug, "oneliner": t["oneliner"],
-                                  "keywords": t.get("keywords", []),
-                                  "path": f"themes/{slug}.md"})
-            if slug not in current:
+            cluster_fp = {}
+            for slug in bodies:
+                cluster_fp = fpmod.merge_footprints(cluster_fp, fps.get(slug, {}))
+            new_slugs = set()
+            for t in new:
+                slug = slugmod.normalize_slug(t["slug"])
+                new_slugs.add(slug)
+                snap = snapshot.snapshot_theme(mem, slug, op_id, ts)
                 manifest[slug] = {"scope": "base", "scope_dir": str(mem), "slug": slug,
-                                  "action": "created", "snapshot": None}
+                                  "action": "updated" if slug in bodies else "created",
+                                  "snapshot": str(snap) if snap else None}
+                locking.atomic_write(paths.themes_dir(mem) / f"{slug}.md",
+                                     formats.serialize_theme(
+                                         {"slug": slug, "scope": "base", "updated": ts,
+                                          "footprint": cluster_fp, "body": t["merged_markdown"]}))
+                by_slug[slug] = {"slug": slug, "oneliner": t["oneliner"],
+                                 "keywords": t.get("keywords", []),
+                                 "path": f"themes/{slug}.md"}
+            for slug in set(bodies) - new_slugs:     # deliberately merged away
+                snap = snapshot.snapshot_theme(mem, slug, op_id, ts)
+                (paths.themes_dir(mem) / f"{slug}.md").unlink()
+                manifest[slug] = {"scope": "base", "scope_dir": str(mem), "slug": slug,
+                                  "action": "deleted", "snapshot": str(snap) if snap else None}
+                by_slug.pop(slug, None)
+            merged_total += len(bodies) - len(new_slugs)
 
-        for slug in current - new_slugs:         # delete merged-away themes
-            (paths.themes_dir(mem) / f"{slug}.md").unlink()
-            manifest[slug]["action"] = "deleted"
+        if manifest:
+            locking.atomic_write(idx_path,
+                                 formats.serialize_index(list(by_slug.values()), "base"))
+            fpmod.write_match_keys(mem)
+            snapshot.write_manifest(base_mem, op_id, list(manifest.values()))
 
-        # index = the consolidated set ONLY (authoritative rewrite)
-        locking.atomic_write(paths.index_path(mem),
-                             formats.serialize_index(index_entries, "base"))
-        snapshot.write_manifest(base_mem, op_id, list(manifest.values()))
-
-    merged = max(0, len(bodies) - len(new_slugs))
-    emit(f"reconcile: {len(bodies)} → {len(new_slugs)} themes (merged {merged}).")
-    return {"themes_before": len(bodies), "themes_after": len(new_slugs),
-            "merged": merged, "themes": sorted(new_slugs), "errors": []}
+    after = len(list(paths.themes_dir(mem).glob("*.md")))
+    emit(f"reconcile: {before} → {after} notes (merged {merged_total}).")
+    return {"themes_before": before, "themes_after": after,
+            "merged": merged_total, "errors": errors}
 
 
 def main(argv=None):
-    import sys
     import config as cfgmod
     base = paths.base_memory_dir()
     cfg = cfgmod.load_config(base)
@@ -111,7 +180,9 @@ def main(argv=None):
 
     rec = run_reconcile(base, base_mem=base, cfg=cfg, ts=ts, op_id=op_id, progress=_log)
     print(f"[memory] /memory:reconcile → {rec['themes_before']}→{rec['themes_after']} "
-          f"themes (merged {rec['merged']})")
+          f"notes (merged {rec['merged']})")
+    if rec["errors"]:
+        print(f"  ! {len(rec['errors'])} cluster(s) kept un-merged (errored/bad result)")
     return 0
 
 

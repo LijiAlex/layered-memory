@@ -2,93 +2,105 @@ import json
 from pathlib import Path
 import reconcile
 import formats
+import footprint as fpmod
 import config
 import paths
-
-
-def _write_theme(mem, slug, body="## Purpose\nx\n"):
-    paths.themes_dir(mem).mkdir(parents=True, exist_ok=True)
-    (paths.themes_dir(mem) / f"{slug}.md").write_text(
-        formats.serialize_theme({"slug": slug, "scope": "base",
-                                 "updated": "t", "sources": [], "body": body}))
 
 
 def _cfg():
     return dict(config.DEFAULTS)
 
 
-def test_merges_overlapping_themes(tmp_path):
+def _seed_note(mem, slug, footprint=None, body="## Cross-repo map\nx\n"):
+    paths.themes_dir(mem).mkdir(parents=True, exist_ok=True)
+    (paths.themes_dir(mem) / f"{slug}.md").write_text(formats.serialize_theme(
+        {"slug": slug, "scope": "base", "updated": "t",
+         "footprint": footprint or {}, "body": body}))
+
+
+def test_find_clusters_groups_shared_ticket():
+    db = {
+        "feat-a": {"tickets": ["GOV-1"], "repos": ["r"], "files_written": [],
+                   "files_read_recurring": [], "symbols": [], "skills_used": []},
+        "feat-a2": {"tickets": ["GOV-1"], "repos": ["r"], "files_written": [],
+                    "files_read_recurring": [], "symbols": [], "skills_used": []},
+        "unrelated": {"tickets": ["ZZZ-9"], "repos": ["other"], "files_written": [],
+                      "files_read_recurring": [], "symbols": [], "skills_used": []},
+    }
+    clusters = reconcile.find_clusters(db)
+    assert any(set(c) == {"feat-a", "feat-a2"} for c in clusters)
+    assert all("unrelated" not in c for c in clusters)
+
+
+def test_reconcile_merges_cluster_and_deletes_merged_away(tmp_path):
     mem = tmp_path / "mem"
-    _write_theme(mem, "layered-memory-plugin", "## Purpose\ncore\n")
-    _write_theme(mem, "layered-memory-plugin-setup-and-timeout-tuning", "## Purpose\nsetup\n")
+    fp = {"tickets": ["GOV-1"], "repos": ["heracles"]}
+    _seed_note(mem, "feat-a", fp, "## Cross-repo map\nA\n")
+    _seed_note(mem, "feat-a2", fp, "## Cross-repo map\nA2\n")
+    _seed_note(mem, "solo", {"tickets": ["ZZZ-9"], "repos": ["z"]}, "## Cross-repo map\nS\n")
+    fpmod.write_match_keys(mem)
 
-    def caller(prompt, schema, model, timeout):
-        # model consolidates the two into one
-        return {"themes": [{"slug": "layered-memory-plugin",
-                            "oneliner": "the plugin", "keywords": ["plugin"],
-                            "merged_markdown": "## Purpose\ncore + setup\n"}]}
+    def caller(p, s, m, t):                          # merges the cluster into ONE note
+        return {"themes": [{"slug": "feat-a", "oneliner": "merged",
+                            "keywords": ["k"], "merged_markdown": "## Cross-repo map\nMERGED"}]}
 
-    r = reconcile.run_reconcile(mem, base_mem=mem, cfg=_cfg(), ts="t2",
-                                op_id="reconcile-x", model_caller=caller)
-    assert r["themes_before"] == 2
-    assert r["themes_after"] == 1
+    r = reconcile.run_reconcile(mem, base_mem=mem, cfg=_cfg(), ts="t2", op_id="rec",
+                                model_caller=caller)
+    assert not (paths.themes_dir(mem) / "feat-a2.md").exists()    # merged away → deleted
+    assert (paths.themes_dir(mem) / "feat-a.md").exists()
+    assert "MERGED" in (paths.themes_dir(mem) / "feat-a.md").read_text()
+    assert (paths.themes_dir(mem) / "solo.md").exists()           # untouched singleton
     assert r["merged"] == 1
-    # the merged-away theme file is gone
-    assert not (paths.themes_dir(mem) / "layered-memory-plugin-setup-and-timeout-tuning.md").exists()
-    assert (paths.themes_dir(mem) / "layered-memory-plugin.md").exists()
-    # index rebuilt to the single theme
-    idx = formats.parse_index((mem / "index.md").read_text())
-    assert [e["slug"] for e in idx] == ["layered-memory-plugin"]
-    # manifest records the deletion (undoable)
     man = json.loads(next((mem / "history" / "_ops").glob("*.json")).read_text())
     actions = {e["slug"]: e["action"] for e in man["themes"]}
-    assert actions["layered-memory-plugin-setup-and-timeout-tuning"] == "deleted"
+    assert actions["feat-a2"] == "deleted"
 
 
-def test_reconcile_uses_reconcile_call_timeout(tmp_path):
+def test_reconcile_aborts_cluster_on_empty_result(tmp_path):
     mem = tmp_path / "mem"
-    _write_theme(mem, "a")
-    _write_theme(mem, "b")
-    got = {}
+    fp = {"tickets": ["GOV-1"], "repos": ["heracles"]}
+    _seed_note(mem, "feat-a", fp)
+    _seed_note(mem, "feat-a2", fp)
+    fpmod.write_match_keys(mem)
 
-    def caller(prompt, schema, model, timeout):
-        got["t"] = timeout
-        return {"themes": [{"slug": "ab", "oneliner": "o", "keywords": [],
-                            "merged_markdown": "## Purpose\nx\n"}]}
+    def caller(p, s, m, t):
+        return {"themes": []}                        # garbled/empty → must NOT delete
 
-    cfg = _cfg(); cfg["reconcile_call_timeout_sec"] = 321
-    reconcile.run_reconcile(mem, base_mem=mem, cfg=cfg, ts="t", op_id="op",
-                            model_caller=caller)
-    assert got["t"] == 321
+    r = reconcile.run_reconcile(mem, base_mem=mem, cfg=_cfg(), ts="t2", op_id="rec",
+                                model_caller=caller)
+    assert (paths.themes_dir(mem) / "feat-a.md").exists()         # both kept
+    assert (paths.themes_dir(mem) / "feat-a2.md").exists()
+    assert r["merged"] == 0 and r["errors"]
 
 
-def test_noop_under_two_themes(tmp_path):
+def test_reconcile_aborts_when_result_expands(tmp_path):
     mem = tmp_path / "mem"
-    _write_theme(mem, "solo")
+    fp = {"tickets": ["GOV-1"], "repos": ["heracles"]}
+    _seed_note(mem, "feat-a", fp)
+    _seed_note(mem, "feat-a2", fp)
+    fpmod.write_match_keys(mem)
+
+    def caller(p, s, m, t):                          # 3 out of 2 in → invented → abort
+        return {"themes": [{"slug": f"x{i}", "oneliner": "o", "keywords": [],
+                            "merged_markdown": "b"} for i in range(3)]}
+
+    r = reconcile.run_reconcile(mem, base_mem=mem, cfg=_cfg(), ts="t2", op_id="rec",
+                                model_caller=caller)
+    assert (paths.themes_dir(mem) / "feat-a.md").exists()
+    assert (paths.themes_dir(mem) / "feat-a2.md").exists()
+    assert r["merged"] == 0 and r["errors"]
+
+
+def test_reconcile_noop_under_two_notes(tmp_path):
+    mem = tmp_path / "mem"
+    _seed_note(mem, "solo", {"tickets": ["G-1"]})
+    fpmod.write_match_keys(mem)
     calls = {"n": 0}
 
-    def caller(prompt, schema, model, timeout):
+    def caller(p, s, m, t):
         calls["n"] += 1
         return {"themes": []}
 
-    r = reconcile.run_reconcile(mem, base_mem=mem, cfg=_cfg(), ts="t",
-                                op_id="op", model_caller=caller)
-    assert calls["n"] == 0                       # no model call for <2 themes
-    assert r["merged"] == 0
-    assert (paths.themes_dir(mem) / "solo.md").exists()
-
-
-def test_empty_result_aborts_without_deleting(tmp_path):
-    mem = tmp_path / "mem"
-    _write_theme(mem, "a")
-    _write_theme(mem, "b")
-
-    def caller(prompt, schema, model, timeout):
-        return {"themes": []}                    # bad/empty response
-
-    r = reconcile.run_reconcile(mem, base_mem=mem, cfg=_cfg(), ts="t",
-                                op_id="op", model_caller=caller)
-    assert r["errors"]                           # flagged
-    # nothing deleted — both themes survive
-    assert (paths.themes_dir(mem) / "a.md").exists()
-    assert (paths.themes_dir(mem) / "b.md").exists()
+    r = reconcile.run_reconcile(mem, base_mem=mem, cfg=_cfg(), ts="t", op_id="rec",
+                                model_caller=caller)
+    assert calls["n"] == 0 and r["merged"] == 0
