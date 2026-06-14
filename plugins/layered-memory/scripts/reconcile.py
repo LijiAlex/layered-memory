@@ -20,7 +20,7 @@ import snapshot
 import model as modelmod
 import footprint as fpmod
 import resolve
-from build import ENGINE_A_SCHEMA, _strip_frontmatter, _load_existing  # reused engine bits
+from build import ENGINE_A_SCHEMA, _strip_frontmatter, _load_existing, reindex_orphans
 
 _SKILL = (Path(__file__).resolve().parent.parent
           / "skills" / "summary-to-summary" / "SKILL.md")
@@ -75,10 +75,11 @@ def run_reconcile(mem: Path, base_mem: Path, cfg: dict, ts: str, op_id: str,
     emit = progress or (lambda *_: None)
     mem = Path(mem); base_mem = Path(base_mem)
 
+    orphans = reindex_orphans(mem)                  # index any stray theme files first
+    if orphans:
+        emit(f"reconcile: reindexed {orphans} orphan note(s) (were missing from index).")
+    fpmod.write_match_keys(mem)                     # rebuild match-keys from the full index
     mk_db = fpmod.read_match_keys(mem)
-    if not mk_db:                                   # no match-keys yet → derive from themes
-        fpmod.write_match_keys(mem)
-        mk_db = fpmod.read_match_keys(mem)
     before = len(mk_db)
     if before < 2:
         emit(f"reconcile: {before} note(s) — nothing to merge.")

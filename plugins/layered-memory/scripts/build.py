@@ -70,6 +70,65 @@ def _load_existing(mem: Path) -> dict:
     return out
 
 
+# --- orphan reindex: theme files missing from index.md (old interrupted builds left
+#     files ahead of the index) → invisible to load + to reconcile. Re-add them with a
+#     body-derived one-liner + keywords so they're loadable AND matchable. ---
+import re as _re
+
+_STOP = {"the", "and", "for", "with", "this", "that", "from", "into", "via", "use", "using",
+         "purpose", "key", "facts", "decisions", "entities", "tools", "open", "threads",
+         "episodes", "cross", "repo", "map", "status", "note", "section", "current",
+         "recommended", "how", "what", "why", "are", "was", "were", "has", "have"}
+
+
+def _tokens(s: str) -> list:
+    return [w for w in _re.findall(r"[a-z0-9]{3,}", (s or "").lower()) if w not in _STOP]
+
+
+def _body_oneliner(body: str) -> str:
+    lines = [l.strip() for l in (body or "").splitlines()]
+    for i, l in enumerate(lines):
+        if l.lower().startswith("## purpose"):
+            for j in range(i + 1, len(lines)):
+                if lines[j] and not lines[j].startswith("#"):
+                    return lines[j][:160]
+    for l in lines:
+        if l and not l.startswith("#"):
+            return l[:160]
+    return ""
+
+
+def _body_keywords(slug: str, body: str) -> list:
+    kws = [w for w in slug.split("-") if len(w) >= 3]
+    kws += _tokens(_body_oneliner(body))
+    out, seen = [], set()
+    for k in kws:
+        if k not in seen:
+            seen.add(k); out.append(k)
+    return out[:15]
+
+
+def reindex_orphans(mem: Path) -> int:
+    """Add any themes/*.md not present in index.md, with body-derived one-liner+keywords.
+    Returns how many were added. Fixes loadability + makes them matchable for reconcile."""
+    mem = Path(mem)
+    idx = paths.index_path(mem)
+    entries = formats.parse_index(idx.read_text()) if idx.exists() else []
+    have = {e["slug"] for e in entries}
+    added = 0
+    for f in sorted(paths.themes_dir(mem).glob("*.md")):
+        if f.stem in have:
+            continue
+        t = formats.parse_theme(f.read_text())
+        entries.append({"slug": f.stem, "oneliner": _body_oneliner(t["body"]) or f.stem,
+                        "keywords": _body_keywords(f.stem, t["body"]),
+                        "path": f"themes/{f.stem}.md"})
+        added += 1
+    if added:
+        locking.atomic_write(idx, formats.serialize_index(entries, "base"))
+    return added
+
+
 def _sid(path) -> str:
     return Path(path).stem
 
@@ -256,6 +315,7 @@ def run_build(mem: Path, base_mem: Path, cfg: dict, ts: str, op_id: str,
             fpmod.write_match_keys(mem)
         if manifest_by_slug:
             snapshot.write_manifest(base_mem, op_id, list(manifest_by_slug.values()))
+        reindex_orphans(mem)                          # safety: never leave files ahead of index
     emit("done.")
 
     return {"themes_written": len(index_touched),
