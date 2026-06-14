@@ -101,3 +101,29 @@ def test_extract_episode_long_carries_running():
     assert len(calls) == 3                                     # one call per chunk
     assert "RUNNING EPISODE SO FAR" in calls[1]                # 2nd call carries running
     assert out["episode_markdown"] == "step3"
+
+
+def test_extract_episode_long_skips_failed_chunk(tmp_path):
+    skipped = []
+
+    def caller(p, s, m, t):
+        if "chunk B" in p:
+            raise RuntimeError("claude exited 1")              # one bad chunk
+        return {"type": "new-feature", "slug": "f", "oneliner": "o",
+                "keywords": [], "episode_markdown": "ok"}
+
+    out = episode.extract_episode_long(["chunk A", "chunk B", "chunk C"], "PIN",
+                                       model_caller=caller,
+                                       on_skip=lambda i, n: skipped.append(i))
+    assert out["episode_markdown"] == "ok"                     # survived via good chunks
+    assert skipped                                             # skip was reported
+
+
+def test_extract_episode_long_all_fail_raises():
+    def boom(p, s, m, t):
+        raise RuntimeError("down")
+    try:
+        episode.extract_episode_long(["a", "b"], "PIN", model_caller=boom)
+        assert False, "expected RuntimeError"
+    except RuntimeError:
+        pass

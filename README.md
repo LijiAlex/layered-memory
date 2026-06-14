@@ -35,6 +35,26 @@ Built for the case where you want memory you can **audit and own**, not a black 
 
 ---
 
+## vs Claude Code's built-in Auto Memory
+
+Claude Code already ships **Auto Memory** — and it's good. It's plain markdown, auto-loads a `MEMORY.md` index (~200 lines/25KB) plus topic files on demand, and captures automatically as you work. layered-memory is **complementary, not a replacement** — it overlaps deliberately and adds three things Auto Memory doesn't do.
+
+| | Claude Auto Memory (built-in) | layered-memory |
+|---|---|---|
+| **Storage** | plain markdown, per **git repo** (`~/.claude/projects/<repo>/memory/`) | plain markdown, **cross-repo `base` tier** + per-project |
+| **Scope** | per-repo only | spans **all repos** (the base tier) |
+| **Source** | accumulates **going forward** from when enabled | **distilled from your existing transcript history** (backfills what you already have) |
+| **Capture** | **automatic, live** | manual `build` today (live auto-capture is on the roadmap) |
+| **Loading** | `MEMORY.md` index + topic files on demand | `index.md` + theme files on demand *(same pattern)* |
+| **Consolidation** | accumulates | **actively merges overlapping themes** (Engine B) |
+| **Inspect / edit** | plain files, `/memory` | plain files + snapshots/undo |
+
+**What's genuinely different:** (1) a **cross-repo base tier** Auto Memory has no equivalent for; (2) it **mines your existing session history** rather than only accumulating forward; (3) **active consolidation** of overlapping themes. Auto Memory wins today on **live auto-capture** — layered-memory still needs a manual `build` (changing soon).
+
+Use both: let Auto Memory handle the current repo live, and use layered-memory for a curated, cross-project, themed knowledge base distilled from everything you've already done.
+
+---
+
 ## What layered-memory does for Claude Code
 
 - **Builds memory** from your past Claude Code session transcripts → per-theme summaries under `~/.claude/memory/themes/` + a tiny `index.md`.

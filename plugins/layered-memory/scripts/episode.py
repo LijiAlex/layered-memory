@@ -84,11 +84,20 @@ def extract_episode(compressed_text: str, footprint: dict, model_caller=None,
 
 
 def extract_episode_long(chunks: list, pinned: str, model_caller=None,
-                         model: str = "claude-haiku-4-5", timeout: int = 180) -> dict:
-    """Sequential extract across chunks, carrying the pinned block + running episode."""
+                         model: str = "claude-haiku-4-5", timeout: int = 180,
+                         on_skip=None) -> dict:
+    """Sequential extract across chunks, carrying the pinned block + running episode.
+    Per-chunk resilient: if one chunk call fails, skip it (keep the running episode) and
+    continue — don't throw away the other chunks. Raises only if EVERY chunk failed."""
     call = _caller(model_caller)
     running = None
     for i, ch in enumerate(chunks):
         prompt = _prompt(pinned, ch, running=running, part=(i + 1, len(chunks)))
-        running = call(prompt, EPISODE_SCHEMA, model, timeout)
+        try:
+            running = call(prompt, EPISODE_SCHEMA, model, timeout)
+        except Exception:                        # noqa: BLE001 - skip the bad chunk, keep going
+            if on_skip:
+                on_skip(i + 1, len(chunks))
+    if running is None:
+        raise RuntimeError("all chunks failed")  # nothing extracted → build skips + retries
     return running

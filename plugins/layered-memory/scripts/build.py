@@ -183,7 +183,9 @@ def run_build(mem: Path, base_mem: Path, cfg: dict, ts: str, op_id: str,
                     ep = epmod.extract_episode(text, fp, model_caller, bmodel, btimeout)
                 else:
                     ep = epmod.extract_episode_long(
-                        chunks, epmod.pin_block(fp, text), model_caller, bmodel, btimeout)
+                        chunks, epmod.pin_block(fp, text), model_caller, bmodel, btimeout,
+                        on_skip=lambda ci, cn: emit(f"[{i}/{n}] {sid[:8]} chunk {ci}/{cn} "
+                                                    f"failed — skipped, continuing"))
             except Exception as e:               # noqa: BLE001 - resilience boundary
                 emit(f"[{i}/{n}] {sid[:8]} ERROR: {str(e)[:80]} — skipped, retries next run")
                 errors.append({"session": sid, "error": str(e)[:200]})

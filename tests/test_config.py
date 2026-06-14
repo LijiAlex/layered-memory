@@ -32,4 +32,4 @@ def test_load_bad_json_falls_back_to_defaults(tmp_path):
 def test_build_caps_present():
     d = config.DEFAULTS
     assert d["build_max_transcripts"] == 50
-    assert d["build_transcript_char_cap"] == 40000
+    assert d["build_transcript_char_cap"] == 120000

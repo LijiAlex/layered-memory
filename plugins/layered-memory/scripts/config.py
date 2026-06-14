@@ -21,7 +21,7 @@ DEFAULTS = {
     "max_call_retries": 1,                 # on TIMEOUT only, retry with doubled timeout this many times
     "writeup_max_themes_inline": 8,
     "build_max_transcripts": 50,
-    "build_transcript_char_cap": 40000,
+    "build_transcript_char_cap": 120000,   # per-chunk cap (Haiku 200K window → bigger chunks, fewer calls)
     "context_window": None,            # set to your model's window (e.g. 1000000) to also show a %; tokens always shown
     "scratch_stale_after_min": 30,
     "reconcile_schedule": "03:30",
