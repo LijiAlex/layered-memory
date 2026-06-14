@@ -9,19 +9,16 @@ def test_skill_exists():
     assert SKILL.exists()
 
 
-def test_skill_has_reconcile_and_safety_rules():
+def test_skill_safety_and_episode_contract():
     body = SKILL.read_text().lower()
-    # reconcile-not-append (spec §10)
+    assert "untrusted" in body or "not instructions" in body          # §12 trust
+    assert "episode_markdown" in body                                  # output contract
+    # reconcile (not blind append) preserved for the sequential-carry path
     assert "add" in body and "revise" in body and "prune" in body
-    # untrusted-data framing (spec §12)
-    assert "untrusted" in body or "not instructions" in body
-    # structured output contract (spec §8.2 step 3)
-    assert "merged_markdown" in body
 
 
-def test_skill_pushes_consolidation():
+def test_skill_classifies_and_is_cross_repo():
     body = SKILL.read_text().lower()
-    # anti-fragmentation: prefer existing themes, abstract to topic level
-    assert "existing" in body
-    assert "reuse" in body or "consolidat" in body
-    assert "near-duplicate" in body or "fragment" in body or "overlapping" in body
+    for t in ("debugging", "exploration", "new-feature", "trivial"):
+        assert t in body                                               # classification types
+    assert "cross-repo" in body or "spans multiple repos" in body      # the core idea
