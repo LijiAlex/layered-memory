@@ -17,6 +17,7 @@ DEFAULTS = {
     "reconcile_call_timeout_sec": 300,     # per-CLUSTER consolidation call
     "reconcile_cluster_threshold": 8.0,    # match-key overlap score to cluster two notes as dups
     "reconcile_cluster_max": 5,            # max notes merged in one cluster call
+    "reconcile_kw_jaccard": 0.4,           # keyword-overlap ratio to cluster footprint-less notes
     "max_call_retries": 1,                 # on TIMEOUT only, retry with doubled timeout this many times
     "writeup_max_themes_inline": 8,
     "build_max_transcripts": 50,

@@ -166,11 +166,19 @@ def write_match_keys(mem) -> Path:
     import locking
     mem = Path(mem)
     out = {}
+    # index keywords per slug — the fallback signal for footprint-less (legacy) notes
+    idx = paths.index_path(mem)
+    kw_by_slug = {}
+    if idx.exists():
+        for e in formats.parse_index(idx.read_text()):
+            kw_by_slug[e["slug"]] = e.get("keywords", [])
     tdir = paths.themes_dir(mem)
     if tdir.exists():
         for f in tdir.glob("*.md"):
             fp = formats.parse_theme(f.read_text()).get("footprint") or {}
-            out[f.stem] = match_keys(fp)
+            mk = match_keys(fp)
+            mk["keywords"] = kw_by_slug.get(f.stem, [])
+            out[f.stem] = mk
     p = paths.match_keys_path(mem)
     locking.atomic_write(p, json.dumps(out, sort_keys=True, indent=0))
     return p

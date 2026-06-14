@@ -26,9 +26,11 @@ _SKILL = (Path(__file__).resolve().parent.parent
           / "skills" / "summary-to-summary" / "SKILL.md")
 
 
-def find_clusters(mk_db: dict, threshold: float = 8.0, max_size: int = 5) -> list:
-    """Union notes whose pairwise match-key overlap (resolve.score) >= threshold.
-    Returns clusters (lists of >=2 slugs), each capped to max_size."""
+def find_clusters(mk_db: dict, threshold: float = 8.0, max_size: int = 5,
+                  kw_jaccard: float = 0.4) -> list:
+    """Union notes that look like duplicates: either structured overlap (resolve.score >=
+    threshold) OR high keyword-set overlap (Jaccard >= kw_jaccard — the fallback that lets
+    footprint-less legacy notes cluster). Returns clusters (>=2 slugs), each capped to max_size."""
     slugs = sorted(mk_db)
     parent = {s: s for s in slugs}
 
@@ -40,7 +42,9 @@ def find_clusters(mk_db: dict, threshold: float = 8.0, max_size: int = 5) -> lis
 
     for i in range(len(slugs)):
         for j in range(i + 1, len(slugs)):
-            if resolve.score(mk_db[slugs[i]], mk_db[slugs[j]]) >= threshold:
+            a, b = mk_db[slugs[i]], mk_db[slugs[j]]
+            if (resolve.score(a, b) >= threshold
+                    or resolve.keyword_jaccard(a, b) >= kw_jaccard):
                 parent[find(slugs[i])] = find(slugs[j])
 
     groups = {}
@@ -81,7 +85,8 @@ def run_reconcile(mem: Path, base_mem: Path, cfg: dict, ts: str, op_id: str,
         return {"themes_before": before, "themes_after": before, "merged": 0, "errors": []}
 
     clusters = find_clusters(mk_db, cfg.get("reconcile_cluster_threshold", 8.0),
-                             cfg.get("reconcile_cluster_max", 5))
+                             cfg.get("reconcile_cluster_max", 5),
+                             cfg.get("reconcile_kw_jaccard", 0.4))
     if not clusters:
         emit("reconcile: no duplicate clusters found — nothing to merge.")
         return {"themes_before": before, "themes_after": before, "merged": 0, "errors": []}

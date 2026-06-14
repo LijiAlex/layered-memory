@@ -16,9 +16,11 @@ W_FILE_READ = 1.5          # recurring reads only (weak)
 W_REPO = 2.0
 W_SYMBOL = 1.0
 W_SKILL = 0.5
+W_KEYWORD = 0.5            # weak tiebreak signal (index keywords)
 
 DECIDE_THRESHOLD = 8.0     # >= → confident single match
 AMBIGUOUS_BAND = 3.0       # runner-up within this of the top (and no ticket) → ambiguous
+AMBIGUOUS_MIN = 4.0        # below this, signal is too weak → "new" (no LLM tiebreak)
 
 
 def score(session_keys: dict, note_keys: dict) -> float:
@@ -36,7 +38,17 @@ def score(session_keys: dict, note_keys: dict) -> float:
                         & set(note_keys.get("symbols", [])))
     s += W_SKILL * len(set(session_keys.get("skills_used", []))
                        & set(note_keys.get("skills_used", [])))
+    s += W_KEYWORD * len(set(session_keys.get("keywords", []))
+                         & set(note_keys.get("keywords", [])))
     return s
+
+
+def keyword_jaccard(a: dict, b: dict) -> float:
+    """Keyword-set overlap ratio — the fallback signal for footprint-less (legacy) notes."""
+    ka, kb = set(a.get("keywords", [])), set(b.get("keywords", []))
+    if not ka or not kb:
+        return 0.0
+    return len(ka & kb) / len(ka | kb)
 
 
 def candidates(session_fp: dict, match_keys_db: dict, top: int = 3) -> list:
@@ -50,7 +62,8 @@ def candidates(session_fp: dict, match_keys_db: dict, top: int = 3) -> list:
 
 
 def decide(session_fp: dict, match_keys_db: dict,
-           threshold: float = DECIDE_THRESHOLD, band: float = AMBIGUOUS_BAND):
+           threshold: float = DECIDE_THRESHOLD, band: float = AMBIGUOUS_BAND,
+           ambiguous_min: float = AMBIGUOUS_MIN):
     """Return one of:
       ("match", slug)        — confident
       ("new", None)          — no signal at all
@@ -68,7 +81,9 @@ def decide(session_fp: dict, match_keys_db: dict,
         if len(cands) > 1 and cands[1][1] >= top_score - band:
             return ("ambiguous", [c[0] for c in cands[:3]])
         return ("match", top_slug)
-    return ("ambiguous", [c[0] for c in cands[:3]])  # some-but-weak signal → tiebreak
+    if top_score < ambiguous_min:
+        return ("new", None)                         # too weak to bother the model → new
+    return ("ambiguous", [c[0] for c in cands[:3]])  # genuine middle → LLM tiebreak
 
 
 _TIEBREAK_SCHEMA = {

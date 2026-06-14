@@ -12,7 +12,8 @@ def _fp(repos=None, written=None, reads=None, symbols=None, skills=None, tickets
     }
 
 
-def _mk(repos=None, written=None, reads_recurring=None, symbols=None, skills=None, tickets=None):
+def _mk(repos=None, written=None, reads_recurring=None, symbols=None, skills=None,
+        tickets=None, keywords=None):
     # a match_keys-shaped note entry
     return {
         "repos": repos or [],
@@ -21,6 +22,7 @@ def _mk(repos=None, written=None, reads_recurring=None, symbols=None, skills=Non
         "symbols": symbols or [],
         "skills_used": skills or [],
         "tickets": tickets or [],
+        "keywords": keywords or [],
     }
 
 
@@ -63,13 +65,32 @@ def test_decide_no_signal_is_new():
     assert resolve.decide(session, db) == ("new", None)
 
 
-def test_decide_weak_signal_is_ambiguous():
-    # shared repo only (weak) → below threshold → ambiguous (needs tiebreak)
-    db = {"feat-a": _mk(repos=["r"]), "feat-b": _mk(repos=["r"])}
+def test_decide_repo_only_is_new_not_ambiguous():
+    # shared repo only = score 2 < AMBIGUOUS_MIN(4) → new (don't burn an LLM tiebreak)
+    db = {"feat-a": _mk(repos=["r"])}
     session = _fp(repos=["r"])
+    assert resolve.decide(session, db) == ("new", None)
+
+
+def test_decide_mid_signal_is_ambiguous():
+    # two shared repos = score 4 = AMBIGUOUS_MIN → genuine middle → tiebreak
+    db = {"feat-a": _mk(repos=["r1", "r2"])}
+    session = _fp(repos=["r1", "r2"])
     kind, payload = resolve.decide(session, db)
-    assert kind == "ambiguous"
-    assert "feat-a" in payload
+    assert kind == "ambiguous" and "feat-a" in payload
+
+
+def test_keyword_overlap_scored():
+    a = _mk(keywords=["x", "y"])
+    b = _mk(keywords=["x", "z"])
+    assert resolve.score(a, b) == resolve.W_KEYWORD          # one shared keyword
+
+
+def test_keyword_jaccard():
+    a = {"keywords": ["x", "y", "z"]}
+    b = {"keywords": ["x", "y", "w"]}
+    assert resolve.keyword_jaccard(a, b) == 2 / 4            # {x,y} / {x,y,z,w}
+    assert resolve.keyword_jaccard({"keywords": []}, b) == 0.0
 
 
 def test_llm_tiebreak_returns_valid_choice():

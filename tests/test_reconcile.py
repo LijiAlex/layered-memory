@@ -32,6 +32,18 @@ def test_find_clusters_groups_shared_ticket():
     assert all("unrelated" not in c for c in clusters)
 
 
+def test_find_clusters_via_keyword_jaccard_for_legacy():
+    # footprint-less (legacy) notes cluster on keyword overlap ratio, not structured score
+    db = {
+        "a": {"keywords": ["timeout", "heracles", "workflow", "approval"]},
+        "a2": {"keywords": ["timeout", "heracles", "workflow", "guest"]},
+        "other": {"keywords": ["purge", "cassandra", "delete"]},
+    }
+    clusters = reconcile.find_clusters(db, threshold=8.0, kw_jaccard=0.4)
+    assert any(set(c) == {"a", "a2"} for c in clusters)
+    assert all("other" not in c for c in clusters)
+
+
 def test_reconcile_merges_cluster_and_deletes_merged_away(tmp_path):
     mem = tmp_path / "mem"
     fp = {"tickets": ["GOV-1"], "repos": ["heracles"]}

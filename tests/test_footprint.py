@@ -63,6 +63,21 @@ def test_write_and_read_match_keys(tmp_path):
     assert "heracles/a.go" in mk["foo"]["files_read_recurring"]
 
 
+def test_match_keys_includes_index_keywords(tmp_path):
+    import formats
+    mem = tmp_path / "mem"
+    (mem / "themes").mkdir(parents=True)
+    (mem / "themes" / "foo.md").write_text(formats.serialize_theme({
+        "slug": "foo", "scope": "base", "updated": "t",
+        "footprint": {"repos": ["r"]}, "body": "b\n"}))
+    (mem / "index.md").write_text(formats.serialize_index(
+        [{"slug": "foo", "oneliner": "o", "keywords": ["alpha", "beta"],
+          "path": "themes/foo.md"}], "base"))
+    footprint.write_match_keys(mem)
+    mk = footprint.read_match_keys(mem)
+    assert mk["foo"]["keywords"] == ["alpha", "beta"]       # legacy fallback signal
+
+
 def test_match_keys_filters_reads_to_recurring():
     fp = {
         "repos": ["heracles"],
