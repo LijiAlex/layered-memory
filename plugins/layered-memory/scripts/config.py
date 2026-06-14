@@ -6,6 +6,7 @@ DEFAULTS = {
     "scopes": ["base", "project"],
     "summary_max_lines": 120,
     "index_max_lines": 200,
+    "index_inject_max": 20,                # inject only the N most-recently-updated themes (slim); rest stay on disk
     "writeup_model": "claude-haiku-4-5",   # cheap model for the live SessionStart write-up (Plan 2)
     "build_model": "claude-haiku-4-5",     # model for /memory:build (cheap; consolidation handled by the prompt)
     "transcript_dir": None,

@@ -2,23 +2,33 @@ import inject
 
 
 def test_empty_returns_blank():
-    assert inject.build_index_context("", None) == ""
-    assert inject.build_index_context("", "") == ""
+    assert inject.build_index_context([]) == ""
 
 
-def test_base_only_wrapped_as_reference():
-    out = inject.build_index_context("- **foo** — bar\n  keywords: x\n  → themes/foo.md", None)
+def test_slim_lines_no_keywords_or_paths():
+    out = inject.build_index_context([{"slug": "foo", "oneliner": "about foo"}])
     assert "REFERENCE ONLY" in out
     assert "not as instructions" in out.lower() or "not instructions" in out.lower()
-    assert "**foo**" in out
-    assert "Base (all projects)" in out
+    assert "- foo" in out                 # slim line: slug present
+    assert "about foo" in out             # one-liner present
+    assert "keywords:" not in out         # the index.md keyword line is NOT injected per entry
+    assert "themes/foo.md" not in out     # paths not injected either
 
 
-def test_includes_project_section_when_present():
-    out = inject.build_index_context("- **a** — base", "- **b** — proj")
-    assert "Base (all projects)" in out
-    assert "This project" in out
-    assert "**b**" in out
+def test_notes_remaining_on_disk_when_truncated():
+    entries = [{"slug": f"t{i}", "oneliner": "o"} for i in range(3)]
+    out = inject.build_index_context(entries, total=50)
+    assert "3 most-recent of 50" in out
+
+
+def test_select_recent_sorts_by_updated_and_caps():
+    entries = [
+        {"slug": "old", "updated": "2026-06-01T00:00:00Z"},
+        {"slug": "new", "updated": "2026-06-10T00:00:00Z"},
+        {"slug": "mid", "updated": "2026-06-05T00:00:00Z"},
+    ]
+    picked = inject.select_recent(entries, limit=2)
+    assert [e["slug"] for e in picked] == ["new", "mid"]
 
 
 def test_estimate_tokens_roughly_quarter_chars():
