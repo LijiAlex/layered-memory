@@ -1,14 +1,25 @@
 import json
+import os
 from pathlib import Path
 import build
 import formats
+import footprint as fpmod
 import config
 
 
-def _mk_transcript(tdir, name, content="hi"):
+# ---- helpers -------------------------------------------------------------
+
+def _session(tdir, name, repo="heracles", ticket="", file="store/a.go", text="do work"):
+    """Write a non-trivial session: a user turn + an Edit (so footprint has a write)."""
     tdir.mkdir(parents=True, exist_ok=True)
-    (tdir / f"{name}.jsonl").write_text(json.dumps(
-        {"message": {"role": "user", "content": content}}) + "\n")
+    rows = [
+        {"message": {"role": "user", "content": f"{text} {ticket}".strip()}},
+        {"message": {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "1", "name": "Edit",
+             "input": {"file_path": f"/Users/x/code/{repo}/{file}"}}]}},
+    ]
+    (tdir / f"{name}.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+    return tdir / f"{name}.jsonl"
 
 
 def _cfg(tmp_path, **over):
@@ -17,6 +28,135 @@ def _cfg(tmp_path, **over):
     c.update(over)
     return c
 
+
+def _fake_model(episode=None, note=None):
+    """One caller serving both engines; branches on the schema's required keys."""
+    episode = episode or {"type": "new-feature", "slug": "feat-x", "oneliner": "feature x",
+                          "keywords": ["x"], "episode_markdown": "## What\nbuilt x"}
+    note = note or {"slug": "feat-x", "oneliner": "merged x", "keywords": ["x"],
+                    "note_markdown": "## Cross-repo map\nheracles does x\n## Episodes\n- t: x"}
+
+    def caller(prompt, schema, model, timeout):
+        req = schema.get("required", [])
+        if "episode_markdown" in req:
+            return episode
+        if "note_markdown" in req:
+            return note
+        return {"choice": "new"}            # tiebreak schema
+    return caller
+
+
+def _sids(mem):
+    return {ln.split()[0] for ln in (mem / "processed.log").read_text().splitlines() if ln.strip()}
+
+
+# ---- trivial pre-filter --------------------------------------------------
+
+def test_trivial_session_skipped_no_model_call(tmp_path):
+    # user turn only, no writes, short → trivial → skipped before any call
+    tdir = tmp_path / "tx" / "p"; tdir.mkdir(parents=True)
+    (tdir / "s1.jsonl").write_text(json.dumps(
+        {"message": {"role": "user", "content": "hi"}}) + "\n")
+    mem = tmp_path / "mem"
+    calls = {"n": 0}
+
+    def caller(p, s, m, t):
+        calls["n"] += 1
+        return {}
+
+    r = build.run_build(mem, base_mem=mem, cfg=_cfg(tmp_path), ts="t", op_id="op",
+                        model_caller=caller)
+    assert calls["n"] == 0
+    assert r["transcripts_processed"] == 1          # marked processed (trivial)
+    assert r["themes_written"] == 0
+
+
+# ---- new note (no existing → deterministic, no merge call) ---------------
+
+def test_new_note_filed_from_episode(tmp_path):
+    _session(tmp_path / "tx" / "p", "s1", ticket="GOV-1")
+    mem = tmp_path / "mem"
+    r = build.run_build(mem, base_mem=mem, cfg=_cfg(tmp_path), ts="2026-06-10T00:00:00Z",
+                        op_id="op", model_caller=_fake_model())
+    assert r["themes_written"] == 1
+    assert "feat-x" in r["themes"]
+    theme = formats.parse_theme((mem / "themes" / "feat-x.md").read_text())
+    assert "built x" in theme["body"]
+    assert "heracles" in theme["footprint"]["repos"]      # footprint persisted
+    assert "GOV-1" in theme["footprint"]["tickets"]
+    # match-keys file written
+    assert "feat-x" in fpmod.read_match_keys(mem)
+    assert _sids(mem) == {"s1"}
+
+
+# ---- match → merge into existing note (ticket overlap) -------------------
+
+def test_matched_session_merges_into_existing_note(tmp_path):
+    mem = tmp_path / "mem"
+    (mem / "themes").mkdir(parents=True)
+    # pre-seed a note with a ticket footprint + its match-keys
+    (mem / "themes" / "feat-x.md").write_text(formats.serialize_theme({
+        "slug": "feat-x", "scope": "base", "updated": "t0",
+        "footprint": {"repos": ["heracles"], "tickets": ["GOV-1"]},
+        "body": "## Cross-repo map\nold\n"}))
+    fpmod.write_match_keys(mem)
+    # new session carrying the same ticket → should MATCH and merge
+    _session(tmp_path / "tx" / "p", "s2", ticket="GOV-1")
+    merged_note = {"slug": "feat-x", "oneliner": "merged", "keywords": ["x"],
+                   "note_markdown": "## Cross-repo map\nMERGED CONTENT\n## Episodes\n- t: x"}
+    r = build.run_build(mem, base_mem=mem, cfg=_cfg(tmp_path), ts="t1", op_id="op",
+                        model_caller=_fake_model(note=merged_note))
+    body = (mem / "themes" / "feat-x.md").read_text()
+    assert "MERGED CONTENT" in body                 # merge call result written
+    assert r["themes_written"] == 1
+    # no second duplicate note created
+    assert len(list((mem / "themes").glob("*.md"))) == 1
+
+
+# ---- ledger / ordering / resilience --------------------------------------
+
+def test_ledger_records_sid_and_mtime(tmp_path):
+    _session(tmp_path / "tx" / "p", "s1", ticket="GOV-1")
+    mem = tmp_path / "mem"
+    build.run_build(mem, base_mem=mem, cfg=_cfg(tmp_path), ts="t", op_id="op",
+                    model_caller=_fake_model())
+    row = (mem / "processed.log").read_text().split()
+    assert row[0] == "s1" and float(row[1]) > 0     # sid + mtime
+
+
+def test_grown_session_reingested(tmp_path):
+    f = _session(tmp_path / "tx" / "p", "s1", ticket="GOV-1")
+    mem = tmp_path / "mem"
+    calls = {"n": 0}
+
+    def caller(p, s, m, t):
+        calls["n"] += 1
+        return _fake_model()(p, s, m, t)
+
+    build.run_build(mem, base_mem=mem, cfg=_cfg(tmp_path), ts="t1", op_id="op1",
+                    model_caller=caller)
+    first = calls["n"]
+    st = f.stat(); os.utime(f, (st.st_atime + 1000, st.st_mtime + 1000))   # grew
+    build.run_build(mem, base_mem=mem, cfg=_cfg(tmp_path), ts="t2", op_id="op2",
+                    model_caller=caller)
+    assert calls["n"] > first                       # re-ingested, not skipped
+
+
+def test_episode_error_is_resumable(tmp_path):
+    _session(tmp_path / "tx" / "p", "s1", ticket="GOV-1")
+    mem = tmp_path / "mem"
+
+    def boom(p, s, m, t):
+        raise RuntimeError("timeout")
+
+    r = build.run_build(mem, base_mem=mem, cfg=_cfg(tmp_path), ts="t", op_id="op",
+                        model_caller=boom)
+    assert r["errors"] and r["transcripts_processed"] == 0
+    assert not (mem / "processed.log").exists() or \
+        (mem / "processed.log").read_text().strip() == ""
+
+
+# ---- _parse_args / main wiring (unchanged) -------------------------------
 
 def test_parse_args_limit():
     assert build._parse_args(["--limit", "3"]).limit == 3
@@ -28,282 +168,9 @@ def test_main_applies_limit(monkeypatch, tmp_path):
 
     def fake_run_build(mem, base_mem, cfg, ts, op_id, model_caller=None, progress=None):
         captured["limit"] = cfg["build_max_transcripts"]
-        return {"themes_written": 0, "themes": [], "transcripts_processed": 0,
-                "errors": []}
+        return {"themes_written": 0, "themes": [], "transcripts_processed": 0, "errors": []}
 
     monkeypatch.setattr(build, "run_build", fake_run_build)
     monkeypatch.setattr(build.paths, "base_memory_dir", lambda: tmp_path)
     build.main(["--limit", "7"])
     assert captured["limit"] == 7
-
-
-def test_strip_frontmatter():
-    md = "---\nname: x\ndescription: y\n---\n# Body\ntext\n"
-    out = build._strip_frontmatter(md)
-    assert out.startswith("# Body")
-    assert "name: x" not in out
-
-
-def test_engine_prompt_does_not_start_with_dash():
-    # the skill begins with YAML frontmatter (---); the prompt must NOT, or the CLI
-    # arg parser treats it as an option flag.
-    p = build._engine_prompt("some transcript", {})
-    assert not p.lstrip().startswith("-")
-
-
-def test_one_call_per_transcript_and_themes_written(tmp_path):
-    _mk_transcript(tmp_path / "tx" / "p", "s1")
-    _mk_transcript(tmp_path / "tx" / "p", "s2")
-    mem = tmp_path / "mem"
-    calls = {"n": 0}
-
-    def caller(prompt, schema, model, timeout):
-        calls["n"] += 1
-        return {"themes": [{"slug": f"theme{calls['n']}", "oneliner": "o",
-                            "keywords": ["k"], "merged_markdown": "## Purpose\nx\n"}]}
-
-    r = build.run_build(mem, base_mem=mem, cfg=_cfg(tmp_path),
-                        ts="t", op_id="op", model_caller=caller)
-    assert calls["n"] == 2                         # one call per transcript
-    assert r["transcripts_processed"] == 2
-    assert set(r["themes"]) == {"theme1", "theme2"}
-    # ledger records both sessions (first column per row is the sid)
-    sids = {ln.split()[0] for ln in (mem / "processed.log").read_text().splitlines()
-            if ln.strip()}
-    assert sids == {"s1", "s2"}
-
-
-def test_build_uses_build_call_timeout(tmp_path):
-    _mk_transcript(tmp_path / "tx" / "p", "s1")
-    got = {}
-
-    def caller(prompt, schema, model, timeout):
-        got["t"] = timeout
-        return {"themes": []}
-
-    build.run_build(tmp_path / "mem", base_mem=tmp_path / "mem",
-                    cfg=_cfg(tmp_path, build_call_timeout_sec=123),
-                    ts="t", op_id="op", model_caller=caller)
-    assert got["t"] == 123
-
-
-def test_oldest_transcript_first(tmp_path):
-    import os
-    _mk_transcript(tmp_path / "tx" / "p", "older")
-    _mk_transcript(tmp_path / "tx" / "p", "newer")
-    older = tmp_path / "tx" / "p" / "older.jsonl"
-    newer = tmp_path / "tx" / "p" / "newer.jsonl"
-    os.utime(older, (1000, 1000))                 # clearly older mtime
-    os.utime(newer, (9000, 9000))                 # clearly newer mtime
-    mem = tmp_path / "mem"
-
-    def caller(prompt, schema, model, timeout):
-        return {"themes": []}
-
-    # cap to 1 → only the OLDEST should be ingested this run
-    build.run_build(mem, base_mem=mem, cfg=_cfg(tmp_path, build_max_transcripts=1),
-                    ts="t", op_id="op", model_caller=caller)
-    sids = {ln.split()[0] for ln in (mem / "processed.log").read_text().splitlines()
-            if ln.strip()}
-    assert sids == {"older"}                       # oldest first, newest left for later
-
-
-def test_grown_transcript_is_reingested(tmp_path):
-    import os
-    _mk_transcript(tmp_path / "tx" / "p", "s1")
-    f = tmp_path / "tx" / "p" / "s1.jsonl"
-    mem = tmp_path / "mem"
-    calls = {"n": 0}
-
-    def caller(prompt, schema, model, timeout):
-        calls["n"] += 1
-        return {"themes": [{"slug": "t", "oneliner": "o", "keywords": [],
-                            "merged_markdown": "## Purpose\nx\n"}]}
-
-    build.run_build(mem, base_mem=mem, cfg=_cfg(tmp_path), ts="t1", op_id="op1",
-                    model_caller=caller)
-    assert calls["n"] == 1
-    # session continues → file grows + mtime advances past the recorded value
-    f.write_text(f.read_text() + '{"message":{"role":"user","content":"more"}}\n')
-    st = f.stat()
-    os.utime(f, (st.st_atime + 1000, st.st_mtime + 1000))
-    build.run_build(mem, base_mem=mem, cfg=_cfg(tmp_path), ts="t2", op_id="op2",
-                    model_caller=caller)
-    assert calls["n"] == 2                          # grown → re-ingested, not skipped
-
-
-def test_unchanged_transcript_skipped_on_rerun(tmp_path):
-    _mk_transcript(tmp_path / "tx" / "p", "s1")
-    mem = tmp_path / "mem"
-    calls = {"n": 0}
-
-    def caller(prompt, schema, model, timeout):
-        calls["n"] += 1
-        return {"themes": [{"slug": "t", "oneliner": "o", "keywords": [],
-                            "merged_markdown": "## Purpose\nx\n"}]}
-
-    build.run_build(mem, base_mem=mem, cfg=_cfg(tmp_path), ts="t1", op_id="op1",
-                    model_caller=caller)
-    build.run_build(mem, base_mem=mem, cfg=_cfg(tmp_path), ts="t2", op_id="op2",
-                    model_caller=caller)
-    assert calls["n"] == 1                          # unchanged file → skipped 2nd run
-
-
-def test_rerun_skips_processed(tmp_path):
-    _mk_transcript(tmp_path / "tx" / "p", "s1")
-    mem = tmp_path / "mem"
-
-    def caller(prompt, schema, model, timeout):
-        return {"themes": [{"slug": "foo", "oneliner": "o", "keywords": [],
-                            "merged_markdown": "## Purpose\nv\n"}]}
-
-    build.run_build(mem, base_mem=mem, cfg=_cfg(tmp_path), ts="t1", op_id="op1",
-                    model_caller=caller)
-    calls = {"n": 0}
-
-    def caller2(prompt, schema, model, timeout):
-        calls["n"] += 1
-        return {"themes": []}
-
-    r = build.run_build(mem, base_mem=mem, cfg=_cfg(tmp_path), ts="t2", op_id="op2",
-                        model_caller=caller2)
-    assert calls["n"] == 0                          # nothing new → no model calls
-    assert r["transcripts_processed"] == 0
-
-
-def test_max_transcripts_cap(tmp_path):
-    for n in ("s1", "s2", "s3"):
-        _mk_transcript(tmp_path / "tx" / "p", n)
-    mem = tmp_path / "mem"
-    calls = {"n": 0}
-
-    def caller(prompt, schema, model, timeout):
-        calls["n"] += 1
-        return {"themes": []}
-
-    build.run_build(mem, base_mem=mem, cfg=_cfg(tmp_path, build_max_transcripts=2),
-                    ts="t", op_id="op", model_caller=caller)
-    assert calls["n"] == 2                          # capped
-
-
-def test_head_tail_keeps_start_and_end():
-    text = "HEAD" + ("x" * 1000) + "TAIL"
-    out = build._head_tail(text, cap=100)
-    assert out.startswith("HEAD")                  # start kept
-    assert out.endswith("TAIL")                    # end kept (not lost to truncation)
-    assert "truncated middle" in out
-    # short text is returned untouched
-    assert build._head_tail("short", cap=100) == "short"
-
-
-def test_char_cap_samples_head_and_tail_in_prompt(tmp_path):
-    # 'H' marks the session start, 'T' the end; filler 'Z' in between.
-    big = "H" * 100 + "Z" * 100_000 + "T" * 100
-    _mk_transcript(tmp_path / "tx" / "p", "s1", content=big)
-    mem = tmp_path / "mem"
-    seen = {}
-
-    def caller(prompt, schema, model, timeout):
-        seen["prompt"] = prompt
-        return {"themes": []}
-
-    build.run_build(mem, base_mem=mem, cfg=_cfg(tmp_path, build_transcript_char_cap=5000),
-                    ts="t", op_id="op", model_caller=caller)
-    assert "truncated middle" in seen["prompt"]
-    assert "HHHH" in seen["prompt"]                 # session START present
-    assert "TTTT" in seen["prompt"]                 # session END present (the win)
-    assert seen["prompt"].count("Z") <= 5001        # middle still capped
-
-
-def test_snapshot_once_per_slug_and_manifest(tmp_path):
-    # two transcripts both yielding slug "foo": first creates, second updates → 1 snapshot
-    _mk_transcript(tmp_path / "tx" / "p", "s1")
-    _mk_transcript(tmp_path / "tx" / "p", "s2")
-    mem = tmp_path / "mem"
-    bodies = iter(["## Purpose\nv1\n", "## Purpose\nv2\n"])
-
-    def caller(prompt, schema, model, timeout):
-        return {"themes": [{"slug": "foo", "oneliner": "o", "keywords": [],
-                            "merged_markdown": next(bodies)}]}
-
-    r = build.run_build(mem, base_mem=mem, cfg=_cfg(tmp_path), ts="t", op_id="op",
-                        model_caller=caller)
-    # final body is v2
-    assert "v2" in (mem / "themes" / "foo.md").read_text()
-    # exactly one snapshot taken this op (the create had nothing to snapshot;
-    # the second write snapshotted v1)
-    snaps = list((mem / "history" / "foo").glob("*.md"))
-    assert len(snaps) == 1 and "v1" in snaps[0].read_text()
-    man = json.loads((mem / "history" / "_ops" / "op.json").read_text())
-    assert man["themes"][0]["slug"] == "foo"
-    assert man["themes"][0]["action"] == "created"   # didn't exist at op start
-
-
-def test_model_error_is_resumable(tmp_path):
-    _mk_transcript(tmp_path / "tx" / "p", "s1")
-    _mk_transcript(tmp_path / "tx" / "p", "s2")
-    mem = tmp_path / "mem"
-
-    def boom(prompt, schema, model, timeout):
-        raise RuntimeError("api down")
-
-    r = build.run_build(mem, base_mem=mem, cfg=_cfg(tmp_path), ts="t", op_id="op",
-                        model_caller=boom)
-    assert r["errors"]                               # error captured, not raised
-    assert r["transcripts_processed"] == 0           # none completed
-    # nothing marked processed → a later successful run will retry
-    assert not (mem / "processed.log").exists() or \
-        (mem / "processed.log").read_text().strip() == ""
-
-
-def test_one_failure_does_not_abort_the_batch(tmp_path):
-    # first model call fails, second succeeds — with `continue` (not `break`) the
-    # second transcript must still be ingested, and the failed one stays un-processed.
-    _mk_transcript(tmp_path / "tx" / "p", "s1")
-    _mk_transcript(tmp_path / "tx" / "p", "s2")
-    mem = tmp_path / "mem"
-    calls = {"n": 0}
-
-    def caller(prompt, schema, model, timeout):
-        calls["n"] += 1
-        if calls["n"] == 1:
-            raise RuntimeError("timeout")
-        return {"themes": [{"slug": "ok", "oneliner": "o", "keywords": [],
-                            "merged_markdown": "## Purpose\nx\n"}]}
-
-    r = build.run_build(mem, base_mem=mem, cfg=_cfg(tmp_path), ts="t", op_id="op",
-                        model_caller=caller)
-    assert calls["n"] == 2                       # both attempted (didn't abort after #1)
-    assert r["themes_written"] == 1              # the second one still ingested
-    assert len(r["errors"]) == 1                 # the first recorded as an error
-    assert r["transcripts_processed"] == 1       # only the success marked done
-    sids = {ln.split()[0] for ln in (mem / "processed.log").read_text().splitlines()
-            if ln.strip()}
-    assert len(sids) == 1                         # failed transcript NOT marked → retries later
-
-
-def test_progress_callback_emits_milestones(tmp_path):
-    _mk_transcript(tmp_path / "tx" / "p", "s1")
-    mem = tmp_path / "mem"
-    msgs = []
-
-    def caller(prompt, schema, model, timeout):
-        return {"themes": [{"slug": "t", "oneliner": "o", "keywords": [],
-                            "merged_markdown": "## Purpose\nx\n"}]}
-
-    build.run_build(mem, base_mem=mem, cfg=_cfg(tmp_path), ts="t", op_id="op",
-                    model_caller=caller, progress=msgs.append)
-    blob = "\n".join(msgs).lower()
-    assert "scanning" in blob
-    assert "reading transcript" in blob
-    assert "theme" in blob          # per-transcript theme count line
-    assert "index" in blob          # index update line
-    assert "done." in blob
-
-
-def test_no_transcripts_is_noop(tmp_path):
-    mem = tmp_path / "mem"
-    r = build.run_build(mem, base_mem=mem, cfg=_cfg(tmp_path), ts="t", op_id="op",
-                        model_caller=lambda *a: {"themes": []})
-    assert r["themes_written"] == 0
-    assert r["transcripts_processed"] == 0

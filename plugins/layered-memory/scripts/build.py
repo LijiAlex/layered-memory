@@ -8,6 +8,10 @@ import locking
 import snapshot
 import transcripts
 import model as modelmod
+import footprint as fpmod
+import episode as epmod
+import resolve
+import file_note
 
 _SKILL = (Path(__file__).resolve().parent.parent
           / "skills" / "transcript-to-summary" / "SKILL.md")
@@ -144,6 +148,8 @@ def run_build(mem: Path, base_mem: Path, cfg: dict, ts: str, op_id: str,
                 on_retry=lambda nt: emit(f"… call timed out — retrying at {nt}s"))
 
     cap = cfg["build_transcript_char_cap"]
+    bmodel = cfg.get("build_model") or cfg["writeup_model"]
+    btimeout = cfg.get("build_call_timeout_sec") or cfg["writeup_call_timeout_sec"]
     n = len(todo)
     snapped = set()             # slugs snapshotted this op (snapshot once)
     manifest_by_slug = {}
@@ -153,62 +159,99 @@ def run_build(mem: Path, base_mem: Path, cfg: dict, ts: str, op_id: str,
 
     with locking.lock(mem, timeout=cfg["writeup_lock_timeout_sec"]):
         start_existing = {f.stem for f in paths.themes_dir(mem).glob("*.md")}
+        mk_db = fpmod.read_match_keys(mem)              # slug -> match_keys (updated in-loop)
+        idx_path = paths.index_path(mem)
+        prior = formats.parse_index(idx_path.read_text()) if idx_path.exists() else []
+        oneliners = {e["slug"]: e["oneliner"] for e in prior}
+
         for i, f in enumerate(todo, 1):
             sid = _sid(f)
             mt = f.stat().st_mtime           # recorded in the ledger so growth re-ingests
-            emit(f"[{i}/{n}] reading transcript {sid[:8]} …")
-            _, raw = transcripts.read_transcript(f)
-            text = _head_tail(raw.strip(), cap)
-            if not text:
-                emit(f"[{i}/{n}] {sid[:8]} empty — skipped")
+            emit(f"[{i}/{n}] reading {sid[:8]} …")
+            fp = fpmod.extract_footprint(f)
+            text = transcripts.compress_session(f)
+            if not text or epmod.is_trivial(fp, text):
+                emit(f"[{i}/{n}] {sid[:8]} trivial — skipped")
                 append_processed(mem, sid, mt); processed_count += 1
                 continue
-            existing = _load_existing(mem)      # reloaded each iter (grows)
-            emit(f"[{i}/{n}] {sid[:8]} → distilling ({len(text)} chars) …")
+
+            chunks = transcripts.chunk_on_seams(text, cap)
+            emit(f"[{i}/{n}] {sid[:8]} → extracting episode "
+                 f"({len(text)} chars, {len(chunks)} chunk(s)) …")
             try:
-                result = model_caller(_engine_prompt(text, existing),
-                                      ENGINE_A_SCHEMA,
-                                      cfg.get("build_model") or cfg["writeup_model"],
-                                      cfg.get("build_call_timeout_sec")
-                                      or cfg["writeup_call_timeout_sec"])
-            except Exception as e:              # noqa: BLE001 - resilience boundary
+                if len(chunks) == 1:
+                    ep = epmod.extract_episode(text, fp, model_caller, bmodel, btimeout)
+                else:
+                    ep = epmod.extract_episode_long(
+                        chunks, epmod.pin_block(fp, text), model_caller, bmodel, btimeout)
+            except Exception as e:               # noqa: BLE001 - resilience boundary
                 emit(f"[{i}/{n}] {sid[:8]} ERROR: {str(e)[:80]} — skipped, retries next run")
                 errors.append({"session": sid, "error": str(e)[:200]})
-                continue                         # skip THIS transcript only; it's not marked
-                                                 # processed, so it retries on the next run.
-                                                 # Other transcripts in the batch still ingest.
-            got = [slugmod.normalize_slug(t["slug"]) for t in result.get("themes", [])]
-            emit(f"[{i}/{n}] {sid[:8]} → {len(got)} theme(s): {', '.join(got) or '(none)'}")
-            for t in result.get("themes", []):
-                slug = slugmod.normalize_slug(t["slug"])
-                if slug not in snapped:
-                    snap = snapshot.snapshot_theme(mem, slug, op_id, ts)
-                    if snap is not None:
-                        snapped.add(slug)
-                    manifest_by_slug[slug] = {
-                        "scope": "base", "scope_dir": str(mem), "slug": slug,
-                        "action": "updated" if slug in start_existing else "created",
-                        "snapshot": str(snap) if snap else None,
-                    }
-                theme = {"slug": slug, "scope": "base", "updated": ts,
-                         "sources": [], "body": t["merged_markdown"]}
-                locking.atomic_write(paths.themes_dir(mem) / f"{slug}.md",
-                                     formats.serialize_theme(theme))
-                index_touched[slug] = {
-                    "slug": slug, "oneliner": t["oneliner"],
-                    "keywords": t.get("keywords", []),
-                    "path": f"themes/{slug}.md",
+                continue
+            if ep.get("type") == "trivial":
+                emit(f"[{i}/{n}] {sid[:8]} classified trivial — skipped")
+                append_processed(mem, sid, mt); processed_count += 1
+                continue
+
+            # resolve to 0–3 candidates → match / new / ambiguous(LLM tiebreak)
+            kind, payload = resolve.decide(fp, mk_db)
+            if kind == "match":
+                target = payload
+            elif kind == "new":
+                target = None
+            else:
+                pairs = [(s, oneliners.get(s, "")) for s in payload]
+                choice = resolve.llm_tiebreak(
+                    ep.get("episode_markdown") or ep.get("oneliner", ""),
+                    pairs, model_caller, bmodel, btimeout)
+                target = None if choice == "new" else choice
+
+            slug = target or slugmod.normalize_slug(ep.get("slug", "")) or "unsorted"
+            theme_path = paths.themes_dir(mem) / f"{slug}.md"
+            existed = theme_path.exists()
+
+            try:
+                if existed:
+                    prev = formats.parse_theme(theme_path.read_text())
+                    note = file_note.merge_into_note(ep, prev["body"], ts,
+                                                     model_caller, bmodel, btimeout)
+                    new_fp = fpmod.merge_footprints(prev.get("footprint", {}), fp)
+                else:
+                    note = file_note.new_note(ep, ts)
+                    new_fp = fp
+            except Exception as e:               # noqa: BLE001
+                emit(f"[{i}/{n}] {sid[:8]} file-error: {str(e)[:80]} — skipped, retries")
+                errors.append({"session": sid, "error": str(e)[:200]})
+                continue
+
+            if slug not in snapped:
+                snap = snapshot.snapshot_theme(mem, slug, op_id, ts)
+                if snap is not None:
+                    snapped.add(slug)
+                manifest_by_slug[slug] = {
+                    "scope": "base", "scope_dir": str(mem), "slug": slug,
+                    "action": "updated" if slug in start_existing else "created",
+                    "snapshot": str(snap) if snap else None,
                 }
+            locking.atomic_write(theme_path, formats.serialize_theme(
+                {"slug": slug, "scope": "base", "updated": ts,
+                 "footprint": new_fp, "body": note["note_markdown"]}))
+            index_touched[slug] = {"slug": slug, "oneliner": note["oneliner"],
+                                   "keywords": note.get("keywords", []),
+                                   "path": f"themes/{slug}.md"}
+            oneliners[slug] = note["oneliner"]
+            mk_db[slug] = fpmod.match_keys(new_fp)       # same-build matching
+            emit(f"[{i}/{n}] {sid[:8]} → filed into '{slug}' "
+                 f"({'merged' if existed else 'new'})")
             append_processed(mem, sid, mt); processed_count += 1
 
-        idx_path = paths.index_path(mem)
-        prior = formats.parse_index(idx_path.read_text()) if idx_path.exists() else []
         by_slug = {e["slug"]: e for e in prior}
         by_slug.update(index_touched)
         if index_touched:
-            emit(f"updating index ({len(by_slug)} theme(s) total) + manifest …")
+            emit(f"updating index ({len(by_slug)} note(s)) + match-keys + manifest …")
             locking.atomic_write(idx_path,
                                  formats.serialize_index(list(by_slug.values()), "base"))
+            fpmod.write_match_keys(mem)
         if manifest_by_slug:
             snapshot.write_manifest(base_mem, op_id, list(manifest_by_slug.values()))
     emit("done.")
@@ -256,19 +299,9 @@ def main(argv=None):
     if receipt["errors"]:
         print(f"  ! {len(receipt['errors'])} error(s): {receipt['errors'][0]['error'][:120]}")
     print(f"  index: {paths.index_path(base)}")
-
-    # Auto-consolidate: merge any overlapping/duplicate themes the per-transcript pass
-    # created (the per-call model won't reliably dedup; Engine B sees the whole set).
-    try:
-        import reconcile
-        rec = reconcile.run_reconcile(base, base_mem=base, cfg=cfg, ts=ts,
-                                      op_id=f"reconcile-{ts.replace(':', '-')}",
-                                      progress=_log)
-        if rec.get("merged"):
-            print(f"[memory] reconcile → {rec['themes_before']}→{rec['themes_after']} "
-                  f"themes (merged {rec['merged']})")
-    except Exception as e:                        # never let reconcile break the build
-        print(f"[memory] reconcile skipped: {str(e)[:120]}")
+    # No auto-reconcile here: the matcher (resolve.py) prevents NEW dupes by filing into
+    # existing notes; legacy duplicates are cleaned by the cluster-targeted /memory:reconcile
+    # (Step 5). The old all-themes auto-reconcile was the timeout source — removed.
 
 
 if __name__ == "__main__":
