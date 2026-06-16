@@ -86,6 +86,23 @@ def test_keyword_overlap_scored():
     assert resolve.score(a, b) == resolve.W_KEYWORD          # one shared keyword
 
 
+def test_shared_slug_tokens():
+    assert resolve.shared_slug_tokens("autonomous-debug-agent-poc",
+                                      "atlan-debug-agent-roadmap") >= 2   # debug, agent
+    assert resolve.shared_slug_tokens("foo-bar", "baz-qux") == 0
+
+
+def test_same_feature_judge():
+    assert resolve.same_feature(("a", "x"), ("b", "y"),
+                                model_caller=lambda p, s, m, t: {"same": True}) is True
+    assert resolve.same_feature(("a", "x"), ("b", "y"),
+                                model_caller=lambda p, s, m, t: {"same": False}) is False
+
+    def boom(p, s, m, t):
+        raise RuntimeError("x")
+    assert resolve.same_feature(("a", "x"), ("b", "y"), model_caller=boom) is False  # error→keep
+
+
 def test_keyword_jaccard():
     a = {"keywords": ["x", "y", "z"]}
     b = {"keywords": ["x", "y", "w"]}

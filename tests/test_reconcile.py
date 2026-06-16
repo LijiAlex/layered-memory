@@ -103,6 +103,38 @@ def test_reconcile_aborts_when_result_expands(tmp_path):
     assert r["merged"] == 0 and r["errors"]
 
 
+def test_reconcile_llm_judge_merges_slug_similar(tmp_path):
+    import formats
+    mem = tmp_path / "mem"
+    # two notes: share slug tokens (debug, agent) but DISJOINT keywords → only the LLM
+    # judge can decide they're the same feature.
+    _seed_note(mem, "autonomous-debug-agent-poc", {}, "## Cross-repo map\npoc\n")
+    _seed_note(mem, "atlan-debug-agent-roadmap", {}, "## Cross-repo map\nroadmap\n")
+    (mem / "index.md").write_text(formats.serialize_index([
+        {"slug": "autonomous-debug-agent-poc", "oneliner": "poc widget",
+         "keywords": ["poc", "widget", "classify"], "path": "themes/autonomous-debug-agent-poc.md"},
+        {"slug": "atlan-debug-agent-roadmap", "oneliner": "roadmap rag",
+         "keywords": ["roadmap", "rag", "skeleton"], "path": "themes/atlan-debug-agent-roadmap.md"},
+    ], "base"))
+
+    def caller(p, s, m, t):
+        req = s.get("required", [])
+        if "same" in req:
+            return {"same": True}                    # judge: same feature
+        if "themes" in req:
+            return {"themes": [{"slug": "autonomous-debug-agent", "oneliner": "merged",
+                                "keywords": ["debug", "agent"],
+                                "merged_markdown": "## Cross-repo map\nMERGED"}]}
+        return {}
+
+    r = reconcile.run_reconcile(mem, base_mem=mem, cfg=_cfg(), ts="t", op_id="rec",
+                                model_caller=caller)
+    assert r["merged"] >= 1
+    files = {f.stem for f in (mem / "themes").glob("*.md")}
+    assert "autonomous-debug-agent" in files
+    assert "atlan-debug-agent-roadmap" not in files   # merged away
+
+
 def test_reconcile_noop_under_two_notes(tmp_path):
     mem = tmp_path / "mem"
     _seed_note(mem, "solo", {"tickets": ["G-1"]})

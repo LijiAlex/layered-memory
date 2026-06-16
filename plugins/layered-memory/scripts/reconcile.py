@@ -10,6 +10,7 @@ delete-by-absence data-loss.
   away. Abort the cluster if the result is empty, unparseable, or has MORE notes than went in.
 Stdlib only; model_caller injectable.
 """
+import itertools
 from pathlib import Path
 
 import paths
@@ -85,14 +86,6 @@ def run_reconcile(mem: Path, base_mem: Path, cfg: dict, ts: str, op_id: str,
         emit(f"reconcile: {before} note(s) — nothing to merge.")
         return {"themes_before": before, "themes_after": before, "merged": 0, "errors": []}
 
-    clusters = find_clusters(mk_db, cfg.get("reconcile_cluster_threshold", 8.0),
-                             cfg.get("reconcile_cluster_max", 5),
-                             cfg.get("reconcile_kw_jaccard", 0.4))
-    if not clusters:
-        emit("reconcile: no duplicate clusters found — nothing to merge.")
-        return {"themes_before": before, "themes_after": before, "merged": 0, "errors": []}
-    emit(f"reconcile: {len(clusters)} candidate cluster(s) to merge.")
-
     if model_caller is None:
         def model_caller(prompt, schema, model, timeout):
             return modelmod.call_model(
@@ -108,6 +101,63 @@ def run_reconcile(mem: Path, base_mem: Path, cfg: dict, ts: str, op_id: str,
                (formats.parse_index(idx_path.read_text()) if idx_path.exists() else [])}
     fps = {f.stem: formats.parse_theme(f.read_text()).get("footprint", {})
            for f in paths.themes_dir(mem).glob("*.md")}
+
+    # --- cluster: deterministic strong signal, then LLM-judge slug-similar candidates ---
+    parent = {s: s for s in mk_db}
+
+    def _find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]; x = parent[x]
+        return x
+
+    def _union(a, b):
+        parent[_find(a)] = _find(b)
+
+    for c in find_clusters(mk_db, cfg.get("reconcile_cluster_threshold", 8.0),
+                           cfg.get("reconcile_cluster_max", 5),
+                           cfg.get("reconcile_kw_jaccard", 0.4)):
+        for s in c[1:]:
+            _union(c[0], s)
+
+    # slug-similar pairs the deterministic pass missed → ask the LLM "same feature?"
+    min_shared = cfg.get("reconcile_slug_min_shared", 2)
+    budget = cfg.get("reconcile_max_judge_calls", 20)
+    slugs = sorted(mk_db)
+    cand = []
+    for a, b in itertools.combinations(slugs, 2):
+        sh = resolve.shared_slug_tokens(a, b)
+        if sh >= min_shared:
+            cand.append((sh, a, b))
+    cand.sort(reverse=True)                          # most-shared first (best candidates)
+    for sh, a, b in cand:
+        if budget <= 0:
+            emit("reconcile: judge-call budget exhausted — some slug-similar pairs unchecked")
+            break
+        if _find(a) == _find(b):
+            continue
+        budget -= 1
+        if resolve.same_feature((a, by_slug.get(a, {}).get("oneliner", "")),
+                                (b, by_slug.get(b, {}).get("oneliner", "")),
+                                model_caller, rmodel, rtimeout):
+            emit(f"reconcile: LLM judged SAME feature → {a} + {b}")
+            _union(a, b)
+
+    groups = {}
+    for s in slugs:
+        groups.setdefault(_find(s), []).append(s)
+    cap = cfg.get("reconcile_cluster_max", 5)
+    clusters = []
+    for g in groups.values():
+        if len(g) < 2:
+            continue
+        g = sorted(g)
+        for k in range(0, len(g), cap):
+            if len(g[k:k + cap]) >= 2:
+                clusters.append(g[k:k + cap])
+    if not clusters:
+        emit("reconcile: no duplicate clusters (deterministic + LLM judge) — nothing to merge.")
+        return {"themes_before": before, "themes_after": before, "merged": 0, "errors": []}
+    emit(f"reconcile: {len(clusters)} cluster(s) to merge.")
     manifest = {}
     merged_total = 0
     errors = []

@@ -18,6 +18,8 @@ DEFAULTS = {
     "reconcile_cluster_threshold": 8.0,    # match-key overlap score to cluster two notes as dups
     "reconcile_cluster_max": 5,            # max notes merged in one cluster call
     "reconcile_kw_jaccard": 0.4,           # keyword-overlap ratio to cluster footprint-less notes
+    "reconcile_slug_min_shared": 2,        # >=N shared slug tokens → LLM-judge the pair for merge
+    "reconcile_max_judge_calls": 20,       # cap LLM same-feature judge calls per reconcile
     "max_call_retries": 1,                 # on TIMEOUT only, retry with doubled timeout this many times
     "writeup_max_themes_inline": 8,
     "build_max_transcripts": 50,
