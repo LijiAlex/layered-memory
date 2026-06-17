@@ -87,40 +87,47 @@ Start a new session and ask about something you've worked on — the matching th
 
 | Command | What it does |
 |---------|--------------|
-| `/layered-memory:build [--limit N]` | Distil transcripts → themes + index. Incremental (skips already-ingested), oldest-first, capped. `--limit N` caps transcripts this run. Auto-runs reconcile at the end. |
-| `/layered-memory:reconcile` | Merge overlapping/duplicate themes into one; rebuild the index. (Also runs automatically after each build.) |
-| `/layered-memory:reload [theme]` | Re-load memory for the current topic, or a named theme; used to correct a wrong recall. |
+| `/layered-memory:build [--limit N]` | Ingest transcripts → **one note per feature**. Each session is matched to an existing feature (or filed as new) and folded in. Incremental (skips already-ingested), oldest-first, capped. `--limit N` caps transcripts this run. |
+| `/layered-memory:reconcile` | Consolidate notes — merge duplicate features into one, rebuild the index. Cluster-targeted (no all-notes call), with an LLM "same feature?" judge for look-alikes. |
+| `/layered-memory:reload [theme]` | Re-load memory for the current topic, or a named note; used to correct a wrong recall. |
 | `/layered-memory:uninstall-clean [--dir <path>] [--yes]` | Delete the memory data dirs. **Dry-run by default**; `--yes` to delete. Run **before** `/plugin uninstall`. |
 
 ### Config (`~/.claude/memory/config.json`, all optional)
 
 | Key | Default | Meaning |
 |-----|---------|---------|
-| `build_model` | `claude-haiku-4-5` | model used for build/reconcile |
+| `build_model` | `claude-haiku-4-5` | model used for build + reconcile |
 | `build_max_transcripts` | `50` | max new transcripts per build run |
-| `build_transcript_char_cap` | `40000` | per-transcript size cap (head+tail sampled) |
-| `build_call_timeout_sec` | `180` | per-transcript distill timeout |
-| `reconcile_call_timeout_sec` | `300` | consolidation-call timeout |
+| `build_transcript_char_cap` | `120000` | per-chunk size cap (big sessions are chunked on seams) |
+| `build_call_timeout_sec` | `180` | per-episode extract timeout |
+| `reconcile_call_timeout_sec` | `300` | per-cluster merge timeout |
 | `max_call_retries` | `1` | on timeout, retry with **doubled** timeout this many times |
-| `context_window` | `null` | set (e.g. `1000000`) to also show index size as a % of context |
+| `index_inject_max` | `20` | how many recent notes the SessionStart hook injects |
+| `reconcile_kw_jaccard` | `0.4` | keyword-overlap ratio to auto-cluster two notes |
+| `reconcile_slug_min_shared` | `2` | shared slug tokens to LLM-judge a pair for merge |
+| `reconcile_max_judge_calls` | `20` | cap on "same feature?" judge calls per reconcile |
+| `context_window` | `null` | set (e.g. `1000000`) to show index size as a % of context |
 
 ---
 
 ## How it works
 
-**Storage** (`~/.claude/memory/`): `index.md` (tiny table of contents), `themes/<slug>.md` (the distilled summaries), `history/` (pre-write snapshots + op manifests for undo), `processed.log` (ledger of ingested sessions).
+**One note = one feature, spanning repos.** A feature's value is the cross-repo wiring — which repo does what and how they connect — so sessions about the same feature are folded into a *single* note, never sharded per-repo.
 
-**Write path** (`/layered-memory:build`):
-1. Discover transcripts (oldest-first; skips ones already in `processed.log` unless they've grown).
-2. For each, one model call (Engine A) distils it into themes, **reconciling into existing themes** (add / revise / prune — not append). Long transcripts are head+tail sampled. Timeouts escalate (retry at 2×).
-3. **Engine B (reconcile)** then merges overlapping themes globally into a coherent set and rebuilds the index.
-4. Every write is snapshotted first (undoable on disk).
+**Storage** (`~/.claude/memory/`): `index.md` (slim routing index), `themes/<slug>.md` (one feature note each: cross-repo map + key facts + open threads + terse episodes log), `match-keys.json` (slim match metadata, never injected), `history/` (snapshots + op manifests for undo), `processed.log` (mtime ledger of ingested sessions).
 
-**Read path** (automatic):
-1. A **SessionStart hook** injects `index.md` into context as reference (and prints its token cost).
-2. When your prompt matches a theme, the **load-memory skill** reads that theme file and answers from it — proactively, framed as untrusted reference.
+**Key idea:** no model call ever scales with total memory size. Build is bounded per-transcript; reconcile is bounded per-cluster. Matching is a 3-tier hybrid (structured → keyword → LLM judge), no vector DB.
 
-**Incremental + resumable:** re-running build only ingests new/grown sessions; a timed-out transcript is skipped and retried next run; a live session is re-ingested once it grows.
+**Write path** (`/layered-memory:build`) — per transcript, oldest-first:
+1. **Footprint** (deterministic, no model): parse tool blocks → repos, files written/read, skills, commands, symbols, tickets.
+2. **Compress** the session (keep tool *actions*, drop bulk dumps, dedupe reads); skip if **trivial** (no call).
+3. **Extract a type-aware episode** (debugging / exploration / new-feature) — one model call; huge sessions are chunked on natural seams and summarized sequentially with a pinned ticket+goal block (per-chunk resilient).
+4. **Match** the footprint to an existing feature (ticket › cross-repo file overlap › symbols/skills › keywords; bounded LLM tiebreak when unsure). Match → fold the episode into that note (passing only that note); no match → new note. Reconcile-not-append.
+5. Snapshot before every write; mtime ledger makes it incremental + resumable (grown/live sessions re-ingest; a failed transcript retries next run; timeouts retry at 2×).
+
+**Consolidate** (`/layered-memory:reconcile`): find duplicate **clusters** (keyword overlap, plus an LLM "same feature?" judge for slug-similar look-alikes whose keywords diverge), merge each small cluster in its own bounded call, and safe-delete only the slugs deliberately merged (abort a cluster on a bad result — never delete-by-absence).
+
+**Read path** (automatic): a **SessionStart hook** injects a slim **recent-N** index (slug + one-liner) — full index stays on disk; when your prompt matches a feature, the **load-memory skill** reads that note and answers from it, framed as untrusted reference.
 
 ---
 
@@ -134,14 +141,13 @@ Start a new session and ask about something you've worked on — the matching th
 
 ## Roadmap
 
-Working today: build, incremental re-build, automatic theme surfacing, consolidation, on-disk undo snapshots, clean uninstall. Planned next:
+Working today: feature-note build (footprint match + episode extract + fold-into-one-note), incremental/resumable ingest, cluster-targeted reconcile with LLM same-feature judge, slim recent-N index injection, on-disk undo snapshots, clean uninstall. Planned next:
 
 - **Live auto-capture** (capture as you work + write-up at session end, so no manual `/build`) — the biggest missing piece.
+- **Pull-on-demand read path** — match the prompt to a feature on the fly instead of injecting the recent-N index.
 - **`/layered-memory:undo`** — undo manifests are written, but no replay command yet.
-- **Complaints reindex** — wrong-recalls are logged but not yet consumed to retune index keywords.
-- **Engine B split/prune** — currently merge-only (no theme splitting or stale-line pruning).
+- **Reconcile split/prune** — currently merge-only (no note splitting or stale-line pruning).
 - **Nightly reconcile**, **per-project scope** builds, **`--reset`**, **ledger compaction**.
-- **Capture quality**: tool output and `sources:` are not yet recorded.
 - **Packaging**: privacy `<private>` exclusion, Windows/Linux support.
 
 ---
