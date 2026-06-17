@@ -145,10 +145,13 @@ Working today: feature-note build (footprint match + episode extract + fold-into
 
 - **Live auto-capture** (capture as you work + write-up at session end, so no manual `/build`) — the biggest missing piece.
 - **Pull-on-demand read path** — match the prompt to a feature on the fly instead of injecting the recent-N index.
+- **Better theme capturing** — captured themes may still have overlapping context.
+- **Context growth** — bounded per-call now, but total memory still grows; figuring out long-term handling.
 - **`/layered-memory:undo`** — undo manifests are written, but no replay command yet.
 - **Reconcile split/prune** — currently merge-only (no note splitting or stale-line pruning).
 - **Nightly reconcile**, **per-project scope** builds, **`--reset`**, **ledger compaction**.
 - **Packaging**: privacy `<private>` exclusion, Windows/Linux support.
+- **Structure**: Move away from file structure and bring other persistent storage if required
 
 ---
 
