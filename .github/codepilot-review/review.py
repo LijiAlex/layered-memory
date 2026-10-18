@@ -151,6 +151,11 @@ def render_body(result: ReviewResult, ready: bool, why: list[str], since: str | 
 _SCORE = re.compile(r"\*\*Score:\*\* (\d+)/10")
 
 
+def _clear_needs_review(pr, human_approvals: int) -> None:
+    if human_approvals > 0 and HUMAN_LABEL in {label.name for label in pr.labels}:
+        pr.remove_from_labels(HUMAN_LABEL)
+
+
 def _sync_label(pr, ready: bool) -> None:
     labels = {label.name for label in pr.labels}
     if ready and MERGE_READY not in labels:
@@ -172,10 +177,12 @@ def _recheck(pr, policy: dict, tests: TestSummary, bot_login: str, codepilot_log
     bot_pr = bool(codepilot_login) and pr.user is not None and pr.user.login == codepilot_login
     ready, why = merge_ready(policy, result, tests, list(pr.get_files()), approvals, bot_pr)
     _sync_label(pr, ready)
+    _clear_needs_review(pr, approvals)
     return {"rechecked": True, "ready": ready, "why": why}
 
 
 REVIEW_LABEL = "codepilot-review-pending"    # asks for a review (CodePilot+ adds it on new PRs; a person re-adds it to re-review)
+HUMAN_LABEL = "needs-review"                 # the brief's label: removed once a person approves the PR
 DONE_LABEL = "codepilot-review-completed"   # set once a review is posted (the brief's needs-review label stays: a person still reviews)
 
 
@@ -218,6 +225,7 @@ def run(repo, pr_number: int, model, tests: TestSummary, bot_login: str, codepil
     pr.create_review(commit=repo.get_commit(pr.head.sha), body=render_body(result, ready, why, since, extra),
                      event="COMMENT", comments=inline)
     _sync_label(pr, ready)
+    _clear_needs_review(pr, approvals)
     names = {label.name for label in pr.labels}
     if REVIEW_LABEL in names:
         pr.remove_from_labels(REVIEW_LABEL)              # done: add it again in the GitHub UI for another full review
