@@ -1,0 +1,5 @@
+# reviewer/policy.yaml — copied to the target repo as .github/codepilot-review.yaml (read from the BASE branch)
+min_score: 8                 # reviewer's overall score (1-10) needed for the merge-ready label
+max_changed_lines: 200
+protected: [".github/**", "**/.env", "**/.env.*", "**/*.pem", "**/*.key", "uv.lock", "poetry.lock"]
+human_approvals_for_human_prs: 1
