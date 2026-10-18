@@ -232,7 +232,7 @@ def main() -> int:
     event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
     gh = Github(auth=Auth.Token(os.environ["REVIEWER_TOKEN"]))
     repo = gh.get_repo(os.environ["GITHUB_REPOSITORY"])
-    model = ChatOpenAI(model=os.environ.get("REVIEWER_MODEL", "gpt-6.1-sol"), temperature=0, timeout=180, max_retries=2)
+    model = ChatOpenAI(model=os.environ.get("REVIEWER_MODEL", "gpt-6.1-sol"), timeout=180, max_retries=2)   # newer models accept only the default temperature
     label = os.environ.get("REVIEW_LABEL", REVIEW_LABEL)
     force = event.get("action") == "labeled" and (event.get("label") or {}).get("name") == label
     out = run(repo, event["pull_request"]["number"], model, parse_junit(Path(os.environ.get("JUNIT", "junit.xml"))),
