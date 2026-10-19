@@ -27,14 +27,65 @@ class KeyIssue(BaseModel):
     issue: str
 
 
-class ReviewResult(BaseModel):
-    """Review of one pull request."""
+class Criterion(BaseModel):
+    points: int = Field(ge=0, le=2, description="0 = no, 1 = partly, 2 = yes")
+    reason: str = Field(description="one short sentence citing the diff")
+
+
+class Rubric(BaseModel):
+    """Score each criterion 0-2 from the diff and the test summary only."""
+    correctness: Criterion = Field(description="does the code do what it claims, without bugs you can point to?")
+    tests: Criterion = Field(description="are tests added or updated, and do they exercise the change? (docs-only change: 2 if no tests are needed)")
+    matches_issue: Criterion = Field(description="does it do what the linked issue asks — no more, no less?")
+    risk: Criterion = Field(description="low blast radius: edge cases, backward compatibility, shared code handled? (2 = low risk)")
+    scope: Criterion = Field(description="focused and clear: no unrelated changes, readable names?")
+
+
+class RubricReview(BaseModel):
+    """Review of one pull request: a rubric, not a free score (the score and effort are computed by code)."""
     summary: str
-    score: int = Field(ge=1, le=10, description="overall readiness to merge, 10 = ready")
-    effort: int = Field(ge=1, le=5, description="effort to review, 5 = very hard")
+    rubric: Rubric
     security_concerns: list[str] = Field(default_factory=list, max_length=5)
     key_issues: list[KeyIssue] = Field(default_factory=list, max_length=3)
     compliance: str = Field(description="does the change do what the linked issue asks? one or two sentences")
+
+
+class ReviewResult(BaseModel):
+    """What the code builds from the model's rubric (and what the comment shows)."""
+    summary: str
+    score: int = Field(ge=0, le=10)
+    effort: int = Field(ge=1, le=5)
+    security_concerns: list[str] = Field(default_factory=list, max_length=5)
+    key_issues: list[KeyIssue] = Field(default_factory=list, max_length=3)
+    compliance: str = Field(description="does the change do what the linked issue asks? one or two sentences")
+
+
+CRITERIA = [("correctness", "correctness"), ("tests", "tests"), ("matches_issue", "matches the issue"), ("risk", "risk"), ("scope", "scope")]
+HARD_PATHS = re.compile(r"^(\.github/|\.gitlab-ci|Dockerfile|.*\.lock$|pyproject\.toml$|setup\.(py|cfg)$|requirements.*\.txt$)")
+
+
+def review_effort(files) -> int:
+    """1-5 from the diff itself: size, number of files, and whether CI / packaging / lock files are touched."""
+    changed = sum((f.additions or 0) + (f.deletions or 0) for f in files)
+    names = [f.filename or "" for f in files]
+    if any(n.startswith(".github/") for n in names):           # CI and repo settings: always hardest to review
+        return 5
+    size = 5 if changed > 600 else 4 if changed > 250 else 3 if (len(files) >= 3 or changed > 80) else 2 if (changed > 20 or len(files) == 2) else 1
+    if any(HARD_PATHS.match(n) for n in names):                # packaging / lock files change what gets installed
+        size = max(size, 3)
+    return size
+
+
+def rubric_score(r: "RubricReview", tests: "TestSummary", fork: bool = False) -> tuple[int, str]:
+    """Sum of the five criteria (0-10), capped by facts the model cannot talk its way around."""
+    score = sum(getattr(r.rubric, key).points for key, _ in CRITERIA)
+    if r.security_concerns and score > 4:
+        return 4, "capped at 4: security concerns"
+    if (fork or tests.passed == 0) and not (tests.failed or tests.errors) and score > 6:
+        return 6, "capped at 6: tests not run"
+    if (tests.failed or tests.errors) and score > 6:
+        return 6, "capped at 6: tests failing"
+    return score, ""
 
 
 class TestSummary(BaseModel):
@@ -136,9 +187,14 @@ def review_files(repo, pr, bot_login: str):
     return list(pr.get_files()), None
 
 
-def render_body(result: ReviewResult, ready: bool, why: list[str], since: str | None, extra: list[KeyIssue]) -> str:
+def render_body(result: ReviewResult, ready: bool, why: list[str], since: str | None, extra: list[KeyIssue],
+                rubric: "Rubric | None" = None, cap: str = "") -> str:
     lines = [f"### Independent review{' (changes since ' + since[:7] + ')' if since else ''}", "", result.summary, "",
-             f"**Score:** {result.score}/10 · **Review effort:** {result.effort}/5", f"**Matches the issue:** {result.compliance}"]
+             f"**Score:** {result.score}/10 · **Review effort:** {result.effort}/5" + (f" ({cap})" if cap else ""),
+             f"**Matches the issue:** {result.compliance}"]
+    if rubric is not None:
+        lines += ["**Rubric:** " + " · ".join(f"{label} {getattr(rubric, key).points}/2" for key, label in CRITERIA)]
+        lines += [f"- {label}: {getattr(rubric, key).reason}" for key, label in CRITERIA]
     if result.security_concerns:
         lines += ["", "**Security concerns:**"] + [f"- {c}" for c in result.security_concerns]
     if extra:
@@ -210,9 +266,12 @@ def run(repo, pr_number: int, model, tests: TestSummary, bot_login: str, codepil
         iss = repo.get_issue(int(m.group(1)))
         issue_text = f"{iss.title}\n\n{iss.body or ''}"
     diff = "\n".join(f"--- {f.filename}\n{f.patch or '(binary or too large)'}" for f in files)
-    result: ReviewResult = model.with_structured_output(ReviewResult).invoke(
+    review: RubricReview = model.with_structured_output(RubricReview).invoke(
         [{"role": "system", "content": SYSTEM}, {"role": "user", "content": build_prompt(pr.title, pr.body or "", issue_text, rules, tests, diff)}],
         config={"run_name": "independent-review", "metadata": {"repo": getattr(repo, "full_name", ""), "pr": pr_number, "head": pr.head.sha}})   # LangSmith
+    score, cap = rubric_score(review, tests, fork)
+    result = ReviewResult(summary=review.summary, score=score, effort=review_effort(list(pr.get_files())),
+                          security_concerns=review.security_concerns, key_issues=review.key_issues, compliance=review.compliance)
     allowed = {f.filename: commentable_lines(f.patch) for f in files}
     inline, extra = [], []
     for k in result.key_issues:
@@ -229,7 +288,7 @@ def run(repo, pr_number: int, model, tests: TestSummary, bot_login: str, codepil
     ready, why = merge_ready(policy, result, tests, list(pr.get_files()), approvals, bot_pr)
     if fork:
         ready, why = False, ["fork PR: tests not run"] + [w for w in why if w != "tests not green"]
-    body = render_body(result, ready, why, since, extra) + (f"\n\n> {FORK_NOTE}" if fork else "")
+    body = render_body(result, ready, why, since, extra, review.rubric, cap) + (f"\n\n> {FORK_NOTE}" if fork else "")
     pr.create_review(commit=repo.get_commit(pr.head.sha), body=body,
                      event="COMMENT", comments=inline)
     _sync_label(pr, ready)
