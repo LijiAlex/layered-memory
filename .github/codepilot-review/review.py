@@ -186,7 +186,11 @@ HUMAN_LABEL = "needs-review"                 # the brief's label: removed once a
 DONE_LABEL = "codepilot-review-completed"   # set once a review is posted (the brief's needs-review label stays: a person still reviews)
 
 
-def run(repo, pr_number: int, model, tests: TestSummary, bot_login: str, codepilot_login: str = "", force: bool = False) -> dict:
+FORK_NOTE = "Tests not run: code from a fork is never executed by this reviewer, so this PR is never marked merge-ready automatically."
+
+
+def run(repo, pr_number: int, model, tests: TestSummary, bot_login: str, codepilot_login: str = "", force: bool = False,
+        fork: bool = False) -> dict:
     pr = repo.get_pull(pr_number)
     base = pr.base.sha
     try:
@@ -223,7 +227,10 @@ def run(repo, pr_number: int, model, tests: TestSummary, bot_login: str, codepil
     # a CodePilot+ PR is decided by its author (the CodePilot+ App), not by a label anyone with triage rights can add
     bot_pr = bool(codepilot_login) and pr.user is not None and pr.user.login == codepilot_login
     ready, why = merge_ready(policy, result, tests, list(pr.get_files()), approvals, bot_pr)
-    pr.create_review(commit=repo.get_commit(pr.head.sha), body=render_body(result, ready, why, since, extra),
+    if fork:
+        ready, why = False, ["fork PR: tests not run"] + [w for w in why if w != "tests not green"]
+    body = render_body(result, ready, why, since, extra) + (f"\n\n> {FORK_NOTE}" if fork else "")
+    pr.create_review(commit=repo.get_commit(pr.head.sha), body=body,
                      event="COMMENT", comments=inline)
     _sync_label(pr, ready)
     _clear_needs_review(pr, approvals)
@@ -244,8 +251,10 @@ def main() -> int:
     model = ChatOpenAI(model=os.environ.get("REVIEWER_MODEL", "gpt-6.1-sol"), timeout=180, max_retries=2)   # newer models accept only the default temperature
     label = os.environ.get("REVIEW_LABEL", REVIEW_LABEL)
     force = event.get("action") == "labeled" and (event.get("label") or {}).get("name") == label
+    fork = os.environ.get("FORK_PR") == "true" or \
+        (event["pull_request"].get("head", {}).get("repo") or {}).get("full_name") != os.environ.get("GITHUB_REPOSITORY")
     out = run(repo, event["pull_request"]["number"], model, parse_junit(Path(os.environ.get("JUNIT", "junit.xml"))),
-              os.environ.get("REVIEWER_LOGIN", "codepilot-reviewer[bot]"), os.environ.get("CODEPILOT_LOGIN", ""), force=force)
+              os.environ.get("REVIEWER_LOGIN", "codepilot-reviewer[bot]"), os.environ.get("CODEPILOT_LOGIN", ""), force=force, fork=fork)
     print(json.dumps(out))
     return 0
 
