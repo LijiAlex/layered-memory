@@ -209,8 +209,12 @@ _SCORE = re.compile(r"\*\*Score:\*\* (\d+)/10")
 
 
 def _clear_needs_review(pr, human_approvals: int) -> None:
-    if human_approvals > 0 and HUMAN_LABEL in {label.name for label in pr.labels}:
+    """needs-review = a person still has to review: on until someone approves, for every PR (CodePilot+, human, fork)."""
+    names = {label.name for label in pr.labels}
+    if human_approvals > 0 and HUMAN_LABEL in names:
         pr.remove_from_labels(HUMAN_LABEL)
+    elif human_approvals == 0 and HUMAN_LABEL not in names:
+        pr.add_to_labels(HUMAN_LABEL)
 
 
 def _sync_label(pr, ready: bool) -> None:
