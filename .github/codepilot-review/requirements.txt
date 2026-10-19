@@ -4,3 +4,4 @@ langchain-core==1.6.9
 openai==3.26.1
 pydantic==2.14.0
 PyYAML==6.0.3
+langsmith==0.14.5
