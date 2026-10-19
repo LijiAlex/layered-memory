@@ -71,3 +71,6 @@ jobs:
           CODEPILOT_LOGIN: ${{ vars.CODEPILOT_LOGIN }}
           JUNIT: junit.xml
           REVIEW_LABEL: codepilot-review-pending
+          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}    # same key as CodePilot+, its own project
+          LANGSMITH_TRACING: "true"
+          LANGSMITH_PROJECT: codepilot-reviewer
