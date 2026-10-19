@@ -82,7 +82,7 @@ jobs:
   review-fork:
     # Fork PRs: a stranger's code is NEVER checked out, installed or run (no tests job). The reviewer from the base
     # branch reads the diff through the API; the PR can never be marked merge-ready automatically. Large PRs are skipped.
-    if: github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name != github.repository && (github.event.action != 'labeled' || github.event.label.name == 'codepilot-review-pending') && github.event.pull_request.additions + github.event.pull_request.deletions <= 2000
+    if: github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name != github.repository && (github.event.action != 'labeled' || github.event.label.name == 'codepilot-review-pending') && github.event.pull_request.additions <= 2000 && github.event.pull_request.deletions <= 2000
     runs-on: ubuntu-latest
     permissions: {}
     steps:
