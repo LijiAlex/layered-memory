@@ -81,7 +81,8 @@ def rubric_score(r: "RubricReview", tests: "TestSummary", fork: bool = False) ->
     score = sum(getattr(r.rubric, key).points for key, _ in CRITERIA)
     if r.security_concerns and score > 4:
         return 4, "capped at 4: security concerns"
-    if (fork or tests.passed == 0) and not (tests.failed or tests.errors) and score > 6:
+    no_results = any(i.startswith("(no test results") for i in tests.failing_ids)
+    if (fork or no_results or (tests.passed == 0 and not (tests.failed or tests.errors))) and score > 6:
         return 6, "capped at 6: tests not run"
     if (tests.failed or tests.errors) and score > 6:
         return 6, "capped at 6: tests failing"
