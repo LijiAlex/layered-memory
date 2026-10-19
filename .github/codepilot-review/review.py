@@ -207,7 +207,8 @@ def run(repo, pr_number: int, model, tests: TestSummary, bot_login: str, codepil
         issue_text = f"{iss.title}\n\n{iss.body or ''}"
     diff = "\n".join(f"--- {f.filename}\n{f.patch or '(binary or too large)'}" for f in files)
     result: ReviewResult = model.with_structured_output(ReviewResult).invoke(
-        [{"role": "system", "content": SYSTEM}, {"role": "user", "content": build_prompt(pr.title, pr.body or "", issue_text, rules, tests, diff)}])
+        [{"role": "system", "content": SYSTEM}, {"role": "user", "content": build_prompt(pr.title, pr.body or "", issue_text, rules, tests, diff)}],
+        config={"run_name": "independent-review", "metadata": {"repo": getattr(repo, "full_name", ""), "pr": pr_number, "head": pr.head.sha}})   # LangSmith
     allowed = {f.filename: commentable_lines(f.patch) for f in files}
     inline, extra = [], []
     for k in result.key_issues:
