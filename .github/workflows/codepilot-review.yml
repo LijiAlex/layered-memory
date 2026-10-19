@@ -10,9 +10,6 @@ on:
   pull_request_target:                          # fork PRs only (job review-fork): runs THIS workflow from the base branch
     types: [opened, synchronize, reopened, labeled]
 permissions: {}
-concurrency:                                    # one review per PR at a time; a newer push cancels the older run
-  group: codepilot-review-${{ github.event.pull_request.number }}-${{ github.event_name }}
-  cancel-in-progress: true
 env:
   INSTALL: "pip install pytest"            # layered-memory: "pip install pytest"
   TESTS: "python -m pytest -q --junitxml=junit.xml"
@@ -41,6 +38,9 @@ jobs:
     # Job B holds the secrets and never checks out or runs the PR's code: it reads the diff through the API.
     needs: tests
     if: github.event_name != 'pull_request_target' && github.event.pull_request.head.repo.full_name == github.repository && github.event.review.user.login != vars.REVIEWER_LOGIN && (github.event.action != 'labeled' || github.event.label.name == 'codepilot-review-pending')
+    concurrency:                                # one review per PR at a time (job level: skipped events never cancel it)
+      group: codepilot-review-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     permissions: {}
     steps:
@@ -83,6 +83,9 @@ jobs:
     # Fork PRs: a stranger's code is NEVER checked out, installed or run (no tests job). The reviewer from the base
     # branch reads the diff through the API; the PR can never be marked merge-ready automatically. Large PRs are skipped.
     if: github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name != github.repository && (github.event.action != 'labeled' || github.event.label.name == 'codepilot-review-pending') && github.event.pull_request.additions <= 2000 && github.event.pull_request.deletions <= 2000
+    concurrency:                                # one review per PR at a time (job level: skipped events never cancel it)
+      group: codepilot-review-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     permissions: {}
     steps:
