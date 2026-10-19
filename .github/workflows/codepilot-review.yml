@@ -7,14 +7,19 @@ on:
     types: [synchronize, labeled]               # new commits, or the codepilot-review-pending label (first review and re-reviews)
   pull_request_review:                          # a human approval can make a reviewed PR merge-ready
     types: [submitted]
+  pull_request_target:                          # fork PRs only (job review-fork): runs THIS workflow from the base branch
+    types: [opened, synchronize, reopened, labeled]
 permissions: {}
+concurrency:                                    # one review per PR at a time; a newer push cancels the older run
+  group: codepilot-review-${{ github.event.pull_request.number }}-${{ github.event_name }}
+  cancel-in-progress: true
 env:
   INSTALL: "pip install pytest"            # layered-memory: "pip install pytest"
   TESTS: "python -m pytest -q --junitxml=junit.xml"
 jobs:
   tests:
-    # Job A runs the PR's code: read-only token, no secrets, no stored credentials. Fork PRs are skipped (documented).
-    if: github.event.pull_request.head.repo.full_name == github.repository && github.event.review.user.login != vars.REVIEWER_LOGIN && (github.event.action != 'labeled' || github.event.label.name == 'codepilot-review-pending')
+    # Job A runs the PR's code: read-only token, no secrets, no stored credentials. Fork PRs never reach this job (see review-fork).
+    if: github.event_name != 'pull_request_target' && github.event.pull_request.head.repo.full_name == github.repository && github.event.review.user.login != vars.REVIEWER_LOGIN && (github.event.action != 'labeled' || github.event.label.name == 'codepilot-review-pending')
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -35,7 +40,7 @@ jobs:
   review:
     # Job B holds the secrets and never checks out or runs the PR's code: it reads the diff through the API.
     needs: tests
-    if: github.event.pull_request.head.repo.full_name == github.repository && github.event.review.user.login != vars.REVIEWER_LOGIN && (github.event.action != 'labeled' || github.event.label.name == 'codepilot-review-pending')
+    if: github.event_name != 'pull_request_target' && github.event.pull_request.head.repo.full_name == github.repository && github.event.review.user.login != vars.REVIEWER_LOGIN && (github.event.action != 'labeled' || github.event.label.name == 'codepilot-review-pending')
     runs-on: ubuntu-latest
     permissions: {}
     steps:
@@ -72,5 +77,43 @@ jobs:
           JUNIT: junit.xml
           REVIEW_LABEL: codepilot-review-pending
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}    # same key as CodePilot+, its own project
+          LANGSMITH_TRACING: "true"
+          LANGSMITH_PROJECT: codepilot-reviewer
+  review-fork:
+    # Fork PRs: a stranger's code is NEVER checked out, installed or run (no tests job). The reviewer from the base
+    # branch reads the diff through the API; the PR can never be marked merge-ready automatically. Large PRs are skipped.
+    if: github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name != github.repository && (github.event.action != 'labeled' || github.event.label.name == 'codepilot-review-pending') && github.event.pull_request.additions + github.event.pull_request.deletions <= 2000
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        id: app
+        with:
+          app-id: ${{ vars.REVIEWER_APP_ID }}
+          private-key: ${{ secrets.REVIEWER_APP_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-pull-requests: write
+          permission-issues: write
+          permission-contents: read
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:                                   # only the reviewer folder, from the base branch
+          ref: ${{ github.event.pull_request.base.ref }}
+          sparse-checkout: .github/codepilot-review
+          path: cp
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      - run: pip install -r cp/.github/codepilot-review/requirements.txt
+      - run: python cp/.github/codepilot-review/review.py
+        env:
+          REVIEWER_TOKEN: ${{ steps.app.outputs.token }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          REVIEWER_MODEL: ${{ vars.REVIEWER_MODEL || 'gpt-6.1-sol' }}
+          REVIEWER_LOGIN: ${{ vars.REVIEWER_LOGIN }}
+          CODEPILOT_LOGIN: ${{ vars.CODEPILOT_LOGIN }}
+          REVIEW_LABEL: codepilot-review-pending
+          FORK_PR: "true"
+          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
           LANGSMITH_TRACING: "true"
           LANGSMITH_PROJECT: codepilot-reviewer
