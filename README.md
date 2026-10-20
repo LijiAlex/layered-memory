@@ -107,6 +107,22 @@ Start a new session and ask about something you've worked on — the matching th
 | `reconcile_slug_min_shared` | `2` | shared slug tokens to LLM-judge a pair for merge |
 | `reconcile_max_judge_calls` | `20` | cap on "same feature?" judge calls per reconcile |
 | `context_window` | `null` | set (e.g. `1000000`) to show index size as a % of context |
+| `writeup_model` | `claude-haiku-4-5` | fallback model for build + reconcile when `build_model` is empty (originally meant for the future live SessionStart write-up) |
+| `transcript_dir` | `null` | transcript directory to ingest; `null` uses `~/.claude/projects` |
+| `writeup_lock_timeout_sec` | `30` | seconds build/reconcile wait for the memory write lock before giving up |
+| `writeup_call_timeout_sec` | `90` | fallback per-call timeout when `build_call_timeout_sec` / `reconcile_call_timeout_sec` is unset or `0` (otherwise reserved for the future live write-up) |
+| `reconcile_cluster_threshold` | `8.0` | match-key overlap score at which reconcile clusters two notes as duplicates |
+| `reconcile_cluster_max` | `5` | max notes merged in one cluster call (larger groups are split) |
+| `scopes` | `["base", "project"]` | *reserved — not yet read by any code* |
+| `summary_max_lines` | `120` | *reserved — not yet read by any code* |
+| `index_max_lines` | `200` | *reserved — not yet read by any code* |
+| `nudge_idle_turns` | `6` | *reserved — not yet read by any code* |
+| `writeup_max_themes_inline` | `8` | *reserved — not yet read by any code* |
+| `scratch_stale_after_min` | `30` | *reserved — not yet read by any code* |
+| `reconcile_schedule` | `"03:30"` | *reserved — not yet read by any code (reconcile is not scheduled automatically)* |
+| `reconcile_min_interval_hours` | `20` | *reserved — not yet read by any code* |
+| `history_keep_per_theme` | `20` | *reserved — not yet read by any code* |
+| `unsorted_soft_cap` | `40` | *reserved — not yet read by any code* |
 
 ---
 
