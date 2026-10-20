@@ -43,4 +43,9 @@ def load_config(mem: Path) -> dict:
             cfg.update(data)
     except (FileNotFoundError, json.JSONDecodeError):
         pass
+    except (UnicodeDecodeError, IsADirectoryError, PermissionError):
+        # config.json that is not UTF-8, is a directory, or cannot be read
+        # falls back to the defaults as well — a broken config must not
+        # crash every hook
+        pass
     return cfg
