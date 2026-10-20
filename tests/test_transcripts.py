@@ -49,3 +49,19 @@ def test_read_handles_bad_lines(tmp_path):
         {"message": {"role": "user", "content": "hi"}}) + "\n")
     sid, text = transcripts.read_transcript(p)
     assert "hi" in text
+
+
+def test_read_skips_non_object_json_lines(tmp_path):
+    p = tmp_path / "s3.jsonl"
+    p.write_text("[1, 2]\n\"text\"\n" + json.dumps(
+        {"message": {"role": "user", "content": "hello there"}}) + "\n")
+    sid, text = transcripts.read_transcript(p)
+    assert "hello there" in text
+
+
+def test_read_events_skips_non_object_json_lines(tmp_path):
+    p = tmp_path / "s4.jsonl"
+    p.write_text("[1, 2]\n\"text\"\n" + json.dumps(
+        {"message": {"role": "user", "content": "hello there"}}) + "\n")
+    events = transcripts.read_events(p)
+    assert [e["text"] for e in events] == ["hello there"]
