@@ -38,6 +38,8 @@ def read_transcript(path: Path):
             row = json.loads(line)
         except json.JSONDecodeError:
             continue
+        if not isinstance(row, dict):
+            continue
         msg = row.get("message")
         if not isinstance(msg, dict):
             continue
@@ -74,9 +76,12 @@ def read_events(path) -> list:
         if not line:
             continue
         try:
-            rows.append(json.loads(line))
+            row = json.loads(line)
         except json.JSONDecodeError:
             continue
+        if not isinstance(row, dict):
+            continue
+        rows.append(row)
     results = {}                              # pass 1: tool_use_id → result text
     for r in rows:
         msg = r.get("message")
