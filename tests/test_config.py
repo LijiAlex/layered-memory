@@ -29,6 +29,29 @@ def test_load_bad_json_falls_back_to_defaults(tmp_path):
     assert cfg == config.DEFAULTS
 
 
+def test_load_non_utf8_falls_back_to_defaults(tmp_path):
+    (tmp_path / "config.json").write_bytes(b"\xff\xfe\x00\x80 not utf-8 \xc3\x28")
+    cfg = config.load_config(tmp_path)
+    assert cfg == config.DEFAULTS
+
+
+def test_load_directory_falls_back_to_defaults(tmp_path):
+    (tmp_path / "config.json").mkdir()
+    cfg = config.load_config(tmp_path)
+    assert cfg == config.DEFAULTS
+
+
+def test_load_unreadable_falls_back_to_defaults(tmp_path, monkeypatch):
+    (tmp_path / "config.json").write_text(json.dumps({"summary_max_lines": 50}))
+
+    def deny(self, *args, **kwargs):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(config.Path, "read_text", deny)
+    cfg = config.load_config(tmp_path)
+    assert cfg == config.DEFAULTS
+
+
 def test_build_caps_present():
     d = config.DEFAULTS
     assert d["build_max_transcripts"] == 50

@@ -41,6 +41,6 @@ def load_config(mem: Path) -> dict:
         data = json.loads(path.read_text())
         if isinstance(data, dict):
             cfg.update(data)
-    except (FileNotFoundError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         pass
     return cfg
