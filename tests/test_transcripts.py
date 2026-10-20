@@ -49,3 +49,19 @@ def test_read_handles_bad_lines(tmp_path):
         {"message": {"role": "user", "content": "hi"}}) + "\n")
     sid, text = transcripts.read_transcript(p)
     assert "hi" in text
+
+
+def test_read_skips_json_lines_that_are_not_objects(tmp_path):
+    # a truncated or foreign .jsonl can hold valid JSON lines that are not
+    # objects (lists, strings, numbers); they must be skipped like bad JSON,
+    # not crash the whole build
+    p = tmp_path / "s3.jsonl"
+    p.write_text(
+        json.dumps({"message": {"role": "user", "content": "first"}}) + "\n"
+        + json.dumps([1, 2]) + "\n"
+        + json.dumps("a bare string") + "\n"
+        + json.dumps(3.14) + "\n"
+        + json.dumps({"message": {"role": "assistant", "content": "second"}}) + "\n")
+    sid, text = transcripts.read_transcript(p)
+    assert "first" in text and "second" in text
+    assert "bare string" not in text

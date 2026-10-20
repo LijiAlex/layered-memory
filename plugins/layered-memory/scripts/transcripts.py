@@ -38,6 +38,10 @@ def read_transcript(path: Path):
             row = json.loads(line)
         except json.JSONDecodeError:
             continue
+        if not isinstance(row, dict):
+            # valid JSON but not an object (a truncated or foreign .jsonl
+            # can hold arrays, strings or numbers) — skip like bad JSON
+            continue
         msg = row.get("message")
         if not isinstance(msg, dict):
             continue
