@@ -33,3 +33,27 @@ def test_build_caps_present():
     d = config.DEFAULTS
     assert d["build_max_transcripts"] == 50
     assert d["build_transcript_char_cap"] == 120000
+
+
+def test_load_directory_falls_back_to_defaults(tmp_path):
+    # config.json may exist as a directory on a broken install
+    (tmp_path / "config.json").mkdir()
+    cfg = config.load_config(tmp_path)
+    assert cfg == config.DEFAULTS
+
+
+def test_load_unreadable_file_falls_back_to_defaults(tmp_path):
+    f = tmp_path / "config.json"
+    f.write_text("{}")
+    f.chmod(0o000)
+    if f.stat().st_mode & 0o004:  # running as root would still read it
+        f.unlink()
+        return
+    cfg = config.load_config(tmp_path)
+    assert cfg == config.DEFAULTS
+
+
+def test_load_non_utf8_falls_back_to_defaults(tmp_path):
+    (tmp_path / "config.json").write_bytes(b"\xff\xfe summary_max_lines")
+    cfg = config.load_config(tmp_path)
+    assert cfg == config.DEFAULTS
